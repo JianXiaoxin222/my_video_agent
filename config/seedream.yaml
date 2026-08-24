@@ -1,0 +1,36 @@
+# Seedream 5.0 Pro (火山方舟 Ark) image generation configuration.
+# All ${VAR} patterns are resolved from environment variables at load time.
+# Usage: config = load_config("config/seedream.yaml")
+#
+# NOTE: The API key is NOT stored here. It is resolved from, in priority
+# order: constructor arg → SEEDREAM_API_KEY env var → config/secrets.yaml
+# (seedream.api_key). This is a SEPARATE key from the Seedance video client's
+# ark.api_key, so image/video token usage can be tracked independently.
+# Seedream is a ByteDance model on the 火山方舟 platform, not 阿里云.
+# See agents/common/ark_auth.py.
+
+seedream:
+  # Base URL for Ark platform (image generation endpoint: /images/generations)
+  base_url: https://ark.cn-beijing.volces.com/api/v3
+
+  # Model IDs.
+  # ⚠️ Verify the exact model ID in the Ark console model list after you open
+  # (开通) the Seedream 5.0 Pro model — it must match what the console shows.
+  # The versioned form below is the current API id; some docs use the dotted
+  # alias "doubao-seedream-5.0-pro".
+  models:
+    default: doubao-seedream-5-0-pro-260628
+
+  # Default parameters for image generation.
+  defaults:
+    size: "1920x1080"         # 固定 16:9 1080p（手机端足够清晰）；也支持 "1K"/"1.5K"/"2K" 或自定义 "WxH"
+    response_format: "url"    # "url" (returns a JPEG download link) | "b64_json"
+    watermark: false          # whether to add the "AI generated" watermark
+    seed: null                # optional int for reproducible output (null = random)
+    output_format: null       # optional "png" | "jpeg"; null = model default (JPEG via url)
+    timeout: 300              # per-request timeout in seconds
+
+  # Retry configuration for transient API errors.
+  retry:
+    max_attempts: 3
+    backoff_seconds: [5, 10, 20]

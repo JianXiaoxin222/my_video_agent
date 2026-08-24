@@ -1,0 +1,45 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# ---- Virtual environment ----
+.venv/
+venv/
+env/
+
+# ---- Secrets / credentials (NEVER commit) ----
+config/secrets.yaml
+*.key
+*.pem
+
+# ---- Generated output ----
+output/
+download/
+logs/
+tmp/
+studio-ui/node_modules/
+studio-ui/dist/
+*.mp4
+*.mov
+*.png
+*.jpg
+*.jpeg
+*.webp
+preview.html
+
+# ---- OS / editor junk ----
+__MACOSX/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.claude/settings.local.json
+*.swp
+*.swo
+
+# ---- uv / tooling ----
+uv.zip

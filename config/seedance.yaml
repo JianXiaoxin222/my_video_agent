@@ -1,0 +1,33 @@
+# Seedance 2.0 (Ark) API configuration.
+# All ${VAR} patterns are resolved from environment variables at load time.
+# Usage: config = load_config("config/seedance.yaml")
+
+seedance:
+  # NOTE: The API key is NOT stored here. It is resolved from, in priority
+  # order: constructor arg → ARK_API_KEY env var → config/secrets.yaml.
+  # See python/seedance_client.py::_resolve_api_key.
+
+  # Base URL for Ark platform
+  base_url: https://ark.cn-beijing.volces.com/api/v3
+
+  # Model IDs
+  models:
+    # Fast / cost-effective, good for drafts and testing
+    default: doubao-seedance-2-0-mini-260615
+    # Full quality
+    pro: doubao-seedance-2-0-260128
+
+  # Default parameters for video generation
+  defaults:
+    ratio: "16:9"             # "16:9", "9:16", "1:1"
+    duration: 5               # seconds (4-15 for Seedance 2.0)
+    resolution: 480p          # lowest supported output resolution
+    watermark: false           # whether to add watermark
+    generate_audio: true       # whether to generate audio track
+    poll_interval: 30          # seconds between status checks
+    poll_timeout: 600          # max wait time in seconds (10 min)
+
+  # Retry configuration for transient API errors
+  retry:
+    max_attempts: 3
+    backoff_seconds: [30, 60, 120]
