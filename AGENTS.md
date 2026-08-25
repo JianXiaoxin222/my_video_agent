@@ -49,7 +49,7 @@ agents/
 config/           # seedance.yaml、seedream.yaml、secrets.yaml（git-ignored）
 references/       # Seedream 教程等提示词参考资料
 output/projects/  # 项目产物
-logs/             # API 请求与结果 JSONL 审计日志
+logs/             # 按 request/result/error 分类、按 UTC 日期滚动的 JSONL 日志
 ```
 
 ## 环境与密钥
@@ -116,15 +116,13 @@ npm run dev
 
 ## 日志与可复现性
 
-`SeedanceClient` 默认追加：
+所有日志通过 `agents.common.log_writer` 统一写入，并按 UTC 日期自动创建/追加文件：
 
-- `logs/seedance_requests.jsonl`：完整模型、比例、时长、音频/水印开关和 content payload。
-- `logs/seedance_results.jsonl`：成功任务的 `task_id`、模型和公网 `video_url`。
+- `logs/request/seedance_YYYY-MM-DD.jsonl`、`logs/request/seedream_YYYY-MM-DD.jsonl`：请求参数（data URL 会被省略）。
+- `logs/result/seedance_YYYY-MM-DD.jsonl`、`logs/result/seedream_YYYY-MM-DD.jsonl`：返回的任务/图片 URL 与本地输出路径。
+- `logs/error/error_YYYY-MM-DD.jsonl`：所有 API、工作流和客户端错误；每条记录包含时间、类型、消息及可用堆栈。
 
-`SeedreamClient` 默认追加：
-
-- `logs/seedream_requests.jsonl`：请求参数（data URL 会被省略）。
-- `logs/seedream_results.jsonl`：公网 `image_url` 与本地输出路径。
+每天首次写入时自动建立对应文件，之后均以追加方式写入；因此正常请求、返回和异常不会混在同一个目录或文件中。
 
 构造 client 时将 `request_log_path=None` 或 `result_log_path=None` 可关闭对应日志。日志可能包含用户提示词，不要把含敏感内容的日志提交到公共仓库。
 

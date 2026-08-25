@@ -41,6 +41,7 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from agents.video.seedance_client import SeedanceClient
+from agents.common.log_writer import install_error_logging, record_error
 
 
 def build_content_blocks(
@@ -240,6 +241,7 @@ def main():
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
     )
+    install_error_logging()
 
     # ---- Resolve model ----
     client = SeedanceClient(
@@ -346,13 +348,16 @@ def main():
         sys.exit(0)
 
     except TimeoutError as e:
+        record_error("Video generation timed out", exc=e, context={"task_id": locals().get("task_id")})
         print(f"\n  TIMEOUT: {e}", file=sys.stderr)
         print(f"  You can check the task later with get_task('{task_id}').", file=sys.stderr)
         sys.exit(2)
     except RuntimeError as e:
+        record_error("Video generation failed", exc=e, context={"task_id": locals().get("task_id")})
         print(f"\n  FAILED: {e}", file=sys.stderr)
         sys.exit(3)
     except Exception as e:
+        record_error("Video generation CLI failed", exc=e, context={"task_id": locals().get("task_id")})
         print(f"\n  ERROR: {e}", file=sys.stderr)
         if args.verbose:
             import traceback

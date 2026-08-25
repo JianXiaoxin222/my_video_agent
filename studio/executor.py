@@ -6,6 +6,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from agents.common import PROJECT_ROOT
+from agents.common.log_writer import record_error
 from agents.image.seedream_client import SeedreamClient
 from agents.video.seedance_client import SeedanceClient
 from agents.video.generate import build_content_blocks
@@ -190,5 +191,6 @@ class WorkflowExecutor:
             self._emit(run_id, "succeeded", "Workflow completed", results=values)
             self.repository.save_run(run_id, workflow.id, "succeeded", {"events": self.events.get(run_id, []), "results": values})
         except Exception as exc:
+            record_error("Studio workflow execution failed", exc=exc, context={"run_id": run_id, "workflow_id": workflow.id})
             self._emit(run_id, "failed", str(exc))
             self.repository.save_run(run_id, workflow.id, "failed", {"events": self.events.get(run_id, []), "error": str(exc)})

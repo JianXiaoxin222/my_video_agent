@@ -1,21 +1,19 @@
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-from agents.common import PROJECT_ROOT
+from agents.common.log_writer import DailyLogWriter, record_error
 
 
 def record_studio_event(event: str, **payload: Any) -> None:
-    """Append a redacted Studio lifecycle event to a durable JSONL log."""
-    path = PROJECT_ROOT / "logs" / "studio_runs.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    record = {
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "event": event,
-        **payload,
-    }
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    """Record a Studio event in the appropriate date-partitioned log.
+
+    Rejected runs and client/API errors belong in ``logs/error``; successful
+    lifecycle events belong in ``logs/result``.
+    """
+    record = {"event": event, **payload}
+    if event == "client_error" or event.endswith("_error") or event.endswith("_rejected") or event in {"failed", "error"}:
+        record_error(str(payload.get("message") or event), context=record)
+        return
+    category = "request" if event.endswith("_requested") or event == "request" else "result"
+    DailyLogWriter(category, source="studio").write(record)

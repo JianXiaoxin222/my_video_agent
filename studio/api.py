@@ -12,6 +12,9 @@ from .storage import configured_provider, image_bytes_to_data_url
 from .validation import validate_workflow
 from agents.common import PROJECT_ROOT
 from agents.common.config_loader import load_config_or_default
+from agents.common.log_writer import install_error_logging, record_error
+
+install_error_logging()
 from .audit import record_studio_event
 
 
@@ -22,6 +25,7 @@ def create_app():
         from fastapi.responses import StreamingResponse
         from fastapi.staticfiles import StaticFiles
     except ImportError as exc:
+        record_error("Studio dependencies are unavailable", exc=exc)
         raise RuntimeError("Install FastAPI and Uvicorn with: pip install -r requirements.txt") from exc
 
     app = FastAPI(title="Video Agent Studio", version="0.1.0")
@@ -60,17 +64,21 @@ def create_app():
 
     @app.get("/api/logs/runs")
     def run_logs(limit: int = 100):
-        path = PROJECT_ROOT / "logs" / "studio_runs.jsonl"
-        if not path.exists():
-            return {"entries": []}
-        lines = path.read_text(encoding="utf-8").splitlines()[-max(1, min(limit, 500)):]
+        # Studio lifecycle records now live in date-partitioned result files.
+        # Keep reading the legacy file so existing installations remain visible.
+        paths = sorted((PROJECT_ROOT / "logs" / "result").glob("studio_*.jsonl"))
+        legacy = PROJECT_ROOT / "logs" / "studio_runs.jsonl"
+        if legacy.exists():
+            paths.append(legacy)
         entries = []
-        for line in lines:
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                entries.append({"raw": line})
-        return {"entries": entries}
+        for path in paths:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    entries.append({"raw": line})
+        entries.sort(key=lambda item: item.get("timestamp_utc", ""))
+        return {"entries": entries[-max(1, min(limit, 500)):]}
 
     @app.post("/api/workflows")
     def create_workflow(payload: dict[str, Any]):
@@ -196,6 +204,7 @@ def create_app():
                 else:
                     raise HTTPException(503, str(exc)) from exc
             except (RuntimeError, FileNotFoundError) as exc:
+                record_error("Studio asset upload failed", exc=exc, context={"filename": filename})
                 raise HTTPException(503, str(exc)) from exc
         finally:
             temp.unlink(missing_ok=True)

@@ -21,10 +21,8 @@ Usage::
 
 from __future__ import annotations
 
-import json
 import logging
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +32,7 @@ from volcenginesdkarkruntime import Ark
 from agents.common import PROJECT_ROOT
 from agents.common.ark_auth import resolve_ark_api_key
 from agents.common.config_loader import load_config_or_default
+from agents.common.log_writer import DailyLogWriter, record_error
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +45,12 @@ _DEFAULT_CONFIG_PATH = "config/seedance.yaml"
 # Where each video-generation request payload is recorded (JSONL, one JSON
 # object per line). This is the inspectable intermediate artifact showing
 # exactly what prompt/content was sent to the Seedance API.
-_DEFAULT_REQUEST_LOG = (
-    PROJECT_ROOT / "logs" / "seedance_requests.jsonl"
-)
+_DEFAULT_REQUEST_LOG = PROJECT_ROOT / "logs" / "request"
 
 # Where each completed video-generation RESULT is recorded (JSONL, one JSON
 # object per line) — the task_id and returned public video_url, for later
 # lookup/reuse (e.g. chaining a scene's video into the next as reference_video).
-_DEFAULT_RESULT_LOG = (
-    PROJECT_ROOT / "logs" / "seedance_results.jsonl"
-)
+_DEFAULT_RESULT_LOG = PROJECT_ROOT / "logs" / "result"
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +104,8 @@ class SeedanceClient:
         self._result_log_path = (
             Path(result_log_path) if result_log_path is not None else None
         )
+        self._request_logger = (DailyLogWriter("request", source="seedance", target=self._request_log_path) if self._request_log_path is not None else None)
+        self._result_logger = (DailyLogWriter("result", source="seedance", target=self._result_log_path) if self._result_log_path is not None else None)
 
     def _record_request(self, payload: dict[str, Any]) -> None:
         """Append a video-generation request payload to the request log (JSONL).
@@ -118,20 +115,15 @@ class SeedanceClient:
         full ``content`` array (the actual prompt text). This is the inspectable
         intermediate artifact used to audit what the agent conveyed to the API.
         """
-        if self._request_log_path is None:
+        writer = getattr(self, "_request_logger", None)
+        if writer is None and getattr(self, "_request_log_path", None) is not None:
+            writer = DailyLogWriter("request", source="seedance", target=self._request_log_path)
+        if writer is None:
             return
         try:
-            self._request_log_path.parent.mkdir(parents=True, exist_ok=True)
-            record = {
-                "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                **payload,
-            }
-            with open(self._request_log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
-        except Exception:
-            logger.exception(
-                "Failed to record request payload to %s", self._request_log_path
-            )
+            writer.write(payload)
+        except Exception as exc:
+            record_error("Failed to record Seedance request payload", exc=exc, context={"path": str(self._request_log_path)})
 
     def _record_result(
         self,
@@ -146,20 +138,15 @@ class SeedanceClient:
         ``reference_video`` (e.g. chaining one scene's video into the next)
         without re-uploading.
         """
-        if self._result_log_path is None:
+        writer = getattr(self, "_result_logger", None)
+        if writer is None and getattr(self, "_result_log_path", None) is not None:
+            writer = DailyLogWriter("result", source="seedance", target=self._result_log_path)
+        if writer is None:
             return
         try:
-            self._result_log_path.parent.mkdir(parents=True, exist_ok=True)
-            record = {
-                "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "task_id": task_id,
-                "model": model,
-                "video_url": video_url,
-            }
-            with open(self._result_log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
-        except Exception:
-            logger.exception("Failed to record video result to %s", self._result_log_path)
+            writer.write({"task_id": task_id, "model": model, "video_url": video_url})
+        except Exception as exc:
+            record_error("Failed to record Seedance result", exc=exc, context={"path": str(self._result_log_path)})
 
     # ------------------------------------------------------------------
     # Public API
@@ -251,17 +238,21 @@ class SeedanceClient:
             payload["extra_params"] = kwargs
         self._record_request(payload)
 
-        result = self._client.content_generation.tasks.create(
-            model=model,
-            content=content,
-            ratio=ratio,
-            duration=duration,
-            watermark=watermark,
-            generate_audio=generate_audio,
-            **({"resolution": resolution} if resolution is not None else {}),
-            **({"return_last_frame": return_last_frame} if return_last_frame is not None else {}),
-            **kwargs,
-        )
+        try:
+            result = self._client.content_generation.tasks.create(
+                model=model,
+                content=content,
+                ratio=ratio,
+                duration=duration,
+                watermark=watermark,
+                generate_audio=generate_audio,
+                **({"resolution": resolution} if resolution is not None else {}),
+                **({"return_last_frame": return_last_frame} if return_last_frame is not None else {}),
+                **kwargs,
+            )
+        except Exception as exc:
+            record_error("Seedance API request failed", exc=exc, context={"model": model})
+            raise
 
         task_id: str = result.id
         logger.info("Task created: %s", task_id)
@@ -311,12 +302,18 @@ class SeedanceClient:
         while True:
             elapsed = time.time() - start_time
             if elapsed > timeout:
-                raise TimeoutError(
+                exc = TimeoutError(
                     f"Task {task_id} did not complete within {timeout}s "
                     f"(current status unknown, call get_task() to check)"
                 )
+                record_error(str(exc), exc=exc, context={"task_id": task_id})
+                raise exc
 
-            result = self.get_task(task_id)
+            try:
+                result = self.get_task(task_id)
+            except Exception as exc:
+                record_error("Seedance task status request failed", exc=exc, context={"task_id": task_id})
+                raise
             status = result.status
             attempt += 1
 
@@ -334,9 +331,9 @@ class SeedanceClient:
                 return result
             elif status == "failed":
                 error_msg = getattr(result, "error", None)
-                raise RuntimeError(
-                    f"Task {task_id} failed after {attempt} attempts: {error_msg}"
-                )
+                exc = RuntimeError(f"Task {task_id} failed after {attempt} attempts: {error_msg}")
+                record_error(str(exc), exc=exc, context={"task_id": task_id})
+                raise exc
             else:
                 logger.debug(
                     "Task %s status: %s (attempt %d, elapsed %.0fs) — "

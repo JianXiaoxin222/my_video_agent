@@ -44,9 +44,9 @@ npm run dev
 
 建议的操作顺序是：添加输入和生成节点 → 连线 → 在右侧检查器确认提示词、模型、比例和时长 → 点击 **Preview** 检查 payload → 点击生成节点的 **Confirm generation**。也可以在画布上确认后执行整个工作流；每次真实 API 执行都会生成运行记录和事件流。
 
-图片上传在未配置对象存储时可作为内联素材用于图生图；Seedance 的图片、视频参考必须是可访问的 `http(s)` 公网 URL，因此视频输入或图生视频场景需要配置 S3/OSS，或直接填写公网地址。Studio 后端会把运行事件写入 `logs/studio_runs.jsonl`，前端连接失败或接口报错也会记录为客户端错误，便于排查。
+图片上传在未配置对象存储时可作为内联素材用于图生图；Seedance 的图片、视频参考必须是可访问的 `http(s)` 公网 URL，因此视频输入或图生视频场景需要配置 S3/OSS，或直接填写公网地址。Studio 后端会把运行事件写入 `logs/request/studio_YYYY-MM-DD.jsonl`、`logs/result/studio_YYYY-MM-DD.jsonl` 和 `logs/error/error_YYYY-MM-DD.jsonl`，前端连接失败或接口报错也会记录为客户端错误，便于排查。
 
-后端提供健康检查 `GET http://127.0.0.1:8000/api/health`。若页面提示无法连接后端，请确认后端终端仍在运行，并检查 `logs/studio_runs.jsonl`。
+后端提供健康检查 `GET http://127.0.0.1:8000/api/health`。若页面提示无法连接后端，请确认后端终端仍在运行，并检查 `logs/request/studio_YYYY-MM-DD.jsonl`、`logs/result/studio_YYYY-MM-DD.jsonl` 和 `logs/error/error_YYYY-MM-DD.jsonl`。
 
 ## 环境搭建
 

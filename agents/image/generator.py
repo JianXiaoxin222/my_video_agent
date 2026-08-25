@@ -30,6 +30,7 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from agents.image.seedream_client import SeedreamClient
+from agents.common.log_writer import install_error_logging, record_error
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,7 @@ def generate_character_images(
     try:
         client = SeedreamClient(api_key=api_key, config_path=image_config_path)
     except ValueError as e:
+        record_error("Image generation unavailable", exc=e)
         logger.warning("Skipping image generation — %s", e)
         return {}
 
@@ -174,7 +176,8 @@ def generate_character_images(
                 urls[name] = url
             logger.info("✅ %s → %s (url=%s)", name, out_path, url or "<none>")
         except Exception as e:
-            logger.exception("❌ Failed to generate image for %s: %s", name, e)
+            record_error("Failed to generate image", exc=e, context={"name": name, "output_path": str(out_path)})
+            logger.error("❌ Failed to generate image for %s: %s", name, e)
 
     # Persist the public URLs so the bridge can reference them directly as
     # Seedance ``reference_image`` blocks (public URLs only — ``file://`` paths
@@ -188,7 +191,8 @@ def generate_character_images(
             )
             logger.info("Wrote %d image URLs → %s", len(urls), urls_path)
         except Exception as e:
-            logger.exception("Failed to write %s: %s", urls_path, e)
+            record_error("Failed to write image URLs", exc=e, context={"path": str(urls_path)})
+            logger.error("Failed to write %s: %s", urls_path, e)
 
     return results
 
@@ -276,6 +280,7 @@ def main():
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
     )
+    install_error_logging()
 
     # ---- Single-prompt mode ----
     if args.prompt:
@@ -324,6 +329,7 @@ def main():
             print("=" * 60)
             sys.exit(0)
         except Exception as e:
+            record_error("Image generation CLI failed", exc=e, context={"output_path": str(out_path)})
             print(f"\n  Error: {e}", file=sys.stderr)
             if args.verbose:
                 import traceback
@@ -338,9 +344,11 @@ def main():
     try:
         character_prompts = load_instances(project_dir)
     except FileNotFoundError as e:
+        record_error("Image project file not found", exc=e, context={"project_dir": str(project_dir)})
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     except ValueError as e:
+        record_error("Invalid image project", exc=e, context={"project_dir": str(project_dir)})
         print(f"Warning: {e}", file=sys.stderr)
         sys.exit(0)
 
@@ -394,6 +402,7 @@ def main():
             reference_images=reference_images,
         )
     except Exception as e:
+        record_error("Image generation CLI failed", exc=e, context={"project_dir": str(project_dir)})
         print(f"\n  Error: {e}", file=sys.stderr)
         if args.verbose:
             import traceback

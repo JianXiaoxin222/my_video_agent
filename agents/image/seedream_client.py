@@ -23,10 +23,8 @@ Usage::
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +34,7 @@ from volcenginesdkarkruntime import Ark
 from agents.common import PROJECT_ROOT
 from agents.common.ark_auth import resolve_seedream_api_key
 from agents.common.config_loader import load_config_or_default
+from agents.common.log_writer import DailyLogWriter, record_error
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +42,12 @@ _DEFAULT_CONFIG_PATH = "config/seedream.yaml"
 
 # Where each image-generation request payload is recorded (JSONL, one JSON
 # object per line) — the inspectable audit log of what prompt was sent.
-_DEFAULT_REQUEST_LOG = PROJECT_ROOT / "logs" / "seedream_requests.jsonl"
+_DEFAULT_REQUEST_LOG = PROJECT_ROOT / "logs" / "request"
 
 # Where each image-generation RESULT is recorded (JSONL, one JSON object per
 # line) — the returned public image URL + local path, for later lookup/reuse
 # (e.g. as a Seedance ``reference_image`` without re-uploading).
-_DEFAULT_RESULT_LOG = PROJECT_ROOT / "logs" / "seedream_results.jsonl"
+_DEFAULT_RESULT_LOG = PROJECT_ROOT / "logs" / "result"
 
 
 class SeedreamClient:
@@ -92,6 +91,8 @@ class SeedreamClient:
         self._result_log_path = (
             Path(result_log_path) if result_log_path is not None else None
         )
+        self._request_logger = (DailyLogWriter("request", source="seedream", target=self._request_log_path) if self._request_log_path is not None else None)
+        self._result_logger = (DailyLogWriter("result", source="seedream", target=self._result_log_path) if self._result_log_path is not None else None)
 
     @property
     def default_model(self) -> str:
@@ -100,18 +101,15 @@ class SeedreamClient:
 
     def _record_request(self, payload: dict[str, Any]) -> None:
         """Append an image-generation request payload to the audit log (JSONL)."""
-        if self._request_log_path is None:
+        writer = getattr(self, "_request_logger", None)
+        if writer is None and getattr(self, "_request_log_path", None) is not None:
+            writer = DailyLogWriter("request", source="seedream", target=self._request_log_path)
+        if writer is None:
             return
         try:
-            self._request_log_path.parent.mkdir(parents=True, exist_ok=True)
-            record = {
-                "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                **payload,
-            }
-            with open(self._request_log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
-        except Exception:
-            logger.exception("Failed to record request payload to %s", self._request_log_path)
+            writer.write(payload)
+        except Exception as exc:
+            record_error("Failed to record Seedream request payload", exc=exc, context={"path": str(self._request_log_path)})
 
     def _record_result(
         self,
@@ -127,21 +125,15 @@ class SeedreamClient:
         ``reference_image`` without re-uploading. ``image_url`` is None when the
         response was Base64 (which has no public URL).
         """
-        if self._result_log_path is None:
+        writer = getattr(self, "_result_logger", None)
+        if writer is None and getattr(self, "_result_log_path", None) is not None:
+            writer = DailyLogWriter("result", source="seedream", target=self._result_log_path)
+        if writer is None:
             return
         try:
-            self._result_log_path.parent.mkdir(parents=True, exist_ok=True)
-            record = {
-                "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "model": model,
-                "prompt": prompt,
-                "image_url": image_url,
-                "output_path": str(output_path) if output_path is not None else None,
-            }
-            with open(self._result_log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
-        except Exception:
-            logger.exception("Failed to record image result to %s", self._result_log_path)
+            writer.write({"model": model, "prompt": prompt, "image_url": image_url, "output_path": str(output_path) if output_path is not None else None})
+        except Exception as exc:
+            record_error("Failed to record Seedream result", exc=exc, context={"path": str(self._result_log_path)})
 
     # ------------------------------------------------------------------
     # Public API
@@ -229,26 +221,34 @@ class SeedreamClient:
         if reference_image:
             request["image"] = reference_image
 
-        result = self._client.images.generate(**request)
+        try:
+            result = self._client.images.generate(**request)
+        except Exception as exc:
+            record_error("Seedream API request failed", exc=exc, context={"model": model})
+            raise
 
         # Surface API-side errors (e.g. model not opened / insufficient quota).
         error = getattr(result, "error", None)
         if error is not None:
             message = getattr(error, "message", None) or str(error)
             code = getattr(error, "code", None)
-            raise RuntimeError(
-                f"Image generation failed (code={code}): {message}"
-            )
+            exc = RuntimeError(f"Image generation failed (code={code}): {message}")
+            record_error("Image generation failed", exc=exc, context={"code": code, "model": model})
+            raise exc
 
         data = getattr(result, "data", None)
         if not data:
-            raise RuntimeError("Image generation returned no image data.")
+            exc = RuntimeError("Image generation returned no image data.")
+            record_error(str(exc), exc=exc, context={"model": model})
+            raise exc
 
         image = data[0]
         if response_format == "b64_json":
             b64 = getattr(image, "b64_json", None)
             if not b64:
-                raise RuntimeError("Image generation returned empty b64_json.")
+                exc = RuntimeError("Image generation returned empty b64_json.")
+                record_error(str(exc), exc=exc, context={"model": model})
+                raise exc
             return b64
         return getattr(image, "url", None) or ""
 
@@ -346,7 +346,9 @@ class SeedreamClient:
             return path, ""
 
         if not result:
-            raise RuntimeError("Image generation returned an empty URL.")
+            exc = RuntimeError("Image generation returned an empty URL.")
+            record_error(str(exc), exc=exc, context={"model": model})
+            raise exc
 
         path = self.download_image(result, output_path)
         self._record_result(
