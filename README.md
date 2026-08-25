@@ -29,6 +29,25 @@ npm run dev
 
 本地参考素材要参与真实 API 生成时，需要配置 `VIDEO_AGENT_S3_ENDPOINT`、`VIDEO_AGENT_S3_BUCKET`、`VIDEO_AGENT_S3_PUBLIC_BASE_URL`（以及对应的 S3 凭证）；也可以直接使用公网 URL。
 
+### Studio 工作流
+
+画布中的节点通过连线表达依赖，生成模式会根据上游素材自动推断：
+
+| 节点 | 用途 |
+| --- | --- |
+| 文本输入 | 提供提示词或脚本文本 |
+| 图片素材 / 视频素材 | 连接本地文件或公网 URL |
+| 图片生成 | Seedream 文生图或图生图 |
+| 视频生成 | Seedance 文生视频、图生视频、视频生视频，或首尾帧视频 |
+| 脚本项目 | 读写 `output/projects/<标题>/` 下的脚本契约 |
+| 输出 | 连接并查看最终产物 |
+
+建议的操作顺序是：添加输入和生成节点 → 连线 → 在右侧检查器确认提示词、模型、比例和时长 → 点击 **Preview** 检查 payload → 点击生成节点的 **Confirm generation**。也可以在画布上确认后执行整个工作流；每次真实 API 执行都会生成运行记录和事件流。
+
+图片上传在未配置对象存储时可作为内联素材用于图生图；Seedance 的图片、视频参考必须是可访问的 `http(s)` 公网 URL，因此视频输入或图生视频场景需要配置 S3/OSS，或直接填写公网地址。Studio 后端会把运行事件写入 `logs/studio_runs.jsonl`，前端连接失败或接口报错也会记录为客户端错误，便于排查。
+
+后端提供健康检查 `GET http://127.0.0.1:8000/api/health`。若页面提示无法连接后端，请确认后端终端仍在运行，并检查 `logs/studio_runs.jsonl`。
+
 ## 环境搭建
 
 ```powershell
@@ -60,6 +79,8 @@ git-ignored，**切勿提交真实 key**。
 .venv\Scripts\python.exe -m agents.video.generate --prompt "..." --mode text_to_video --dry-run
 ```
 
+`--dry-run` 只编译并打印请求 payload，不会产生 API 费用。真实生成前请确认模型已在火山方舟控制台开通，并检查实体顺序与 `@图片1`、`@视频1` 引用一致。
+
 ## 输出结构
 
 ```
@@ -80,6 +101,18 @@ Claude Code 可用 skill（`.claude/skills/`）：
 - `/character-image-prompt` — 英文定妆照提示词优化（可选）
 - `/sd2-pe` — Seedance 2.0 提示词优化（可选）
 - `/seedance-video` — Seedance 2.0 视频生成（第 3 步手册）
+
+## 开发验证
+
+不调用真实 API 的情况下，可运行仓库自带的 Studio 单元测试和前端类型/构建检查：
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+cd studio-ui
+npm run build
+```
+
+测试会覆盖工作流 DAG 校验、预览 payload、素材上传回退和单节点执行。日志、`output/.studio/` 数据库以及生成的媒体文件均为本地运行产物，请勿把包含提示词或密钥的文件提交到公共仓库。
 
 ## 成本参考
 
