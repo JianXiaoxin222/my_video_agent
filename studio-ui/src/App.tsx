@@ -75,6 +75,73 @@ function assetSrc(url?: string) {
   return url.startsWith('http://') || url.startsWith('https://') || url.startsWith('blob:') || url.startsWith('data:') ? url : `http://127.0.0.1:8000${url}`
 }
 
+const STUDIO_API = 'http://127.0.0.1:8000'
+const PENDING_ERRORS_KEY = 'video-agent-studio.pending-errors'
+
+function detailMessage(detail: unknown) {
+  if (typeof detail === 'string') return detail
+  if (detail && typeof detail === 'object') {
+    const value = detail as { errors?: unknown; message?: unknown }
+    if (Array.isArray(value.errors)) return value.errors.filter(Boolean).join('；')
+    if (typeof value.message === 'string') return value.message
+  }
+  return ''
+}
+
+async function reportClientError(action: string, message: string, statusCode?: number) {
+  const payload = { action, message, status_code: statusCode }
+  try {
+    const response = await fetch(`${STUDIO_API}/api/client-errors`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  } catch {
+    // Queue the error so it is written to studio_runs.jsonl after the backend
+    // comes back. This preserves the diagnostic even during an outage.
+    try {
+      const pending = JSON.parse(localStorage.getItem(PENDING_ERRORS_KEY) || '[]')
+      pending.push(payload)
+      localStorage.setItem(PENDING_ERRORS_KEY, JSON.stringify(pending.slice(-50)))
+    } catch { /* storage may be unavailable in private browser contexts */ }
+  }
+}
+
+async function flushPendingClientErrors() {
+  let pending: Array<{ action: string; message: string; status_code?: number }> = []
+  try { pending = JSON.parse(localStorage.getItem(PENDING_ERRORS_KEY) || '[]') } catch { return }
+  if (!pending.length) return
+  const remaining: typeof pending = []
+  for (const payload of pending) {
+    try {
+      const response = await fetch(`${STUDIO_API}/api/client-errors`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      })
+      if (!response.ok) throw new Error()
+    } catch { remaining.push(payload) }
+  }
+  try { localStorage.setItem(PENDING_ERRORS_KEY, JSON.stringify(remaining)) } catch { /* ignore */ }
+}
+
+async function studioFetch(path: string, init?: RequestInit, action = '请求后端') {
+  try {
+    const response = await fetch(`${STUDIO_API}${path}`, init)
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}))
+      const detail = detailMessage(body.detail) || detailMessage(body) || `HTTP ${response.status}`
+      const message = `后端返回错误（${action}）：${detail}`
+      void reportClientError(action, message, response.status)
+      throw new Error(message)
+    }
+    return response
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('后端返回错误')) throw error
+    const message = `无法连接后端服务（${STUDIO_API}）。请确认后端已启动后重试。`
+    void reportClientError(action, `${message} ${error instanceof Error ? error.message : String(error)}`)
+    throw new Error(message)
+  }
+}
+
 function fileAsDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader()
@@ -171,12 +238,17 @@ export default function App() {
     const form = new FormData()
     form.append('file', file)
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/assets/upload', { method: 'POST', body: form })
+      const response = await studioFetch('/api/assets/upload', { method: 'POST', body: form }, '上传素材')
       const result = await response.json().catch(() => ({}))
-      if (!response.ok || !result.url) throw new Error(result.detail || 'Asset upload failed — configure a storage provider')
+      if (!result.url) throw new Error('后端未返回素材地址，请检查对象存储配置或素材格式。')
       setNodes((current) => current.map((node) => node.id === selectedNode.id ? { ...node, data: { ...node.data, url: result.url, localPreview, fileName: file.name, uploadState: 'uploaded' } } : node))
       setActivity(`${file.name} uploaded and ready to connect`)
     } catch (error) {
+      if (error instanceof Error && error.message.startsWith('无法连接后端')) {
+        setNodes((current) => current.map((node) => node.id === selectedNode.id ? { ...node, data: { ...node.data, localPreview, fileName: file.name, uploadState: 'error' } } : node))
+        setActivity(error.message)
+        return
+      }
       // Without an S3/OSS provider, keep local images usable for Seedream by
       // embedding them as a data URL. Seedance still requires a public URL.
       if (selectedNode.data.kind === 'image_input') {
@@ -196,9 +268,9 @@ export default function App() {
   const save = async () => {
     setActivity('Saving workflow…')
     try {
-      await fetch('http://127.0.0.1:8000/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(graphPayload()) })
+      await studioFetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(graphPayload()) }, '保存工作流')
       setActivity('Workflow saved')
-    } catch { setActivity('Backend offline — canvas kept locally') }
+    } catch (error) { setActivity(error instanceof Error ? error.message : '无法连接后端服务，请确认后端已启动后重试。') }
   }
   const deleteSelected = useCallback(() => {
     if (!selected) return
@@ -207,6 +279,14 @@ export default function App() {
     setSelected('')
     setActivity('Node deleted')
   }, [selected, setNodes, setEdges])
+  useEffect(() => {
+    void studioFetch('/api/health', undefined, '检查后端服务')
+      .then(async () => { await flushPendingClientErrors(); setActivity('后端服务已连接，可以开始构建工作流') })
+      .catch((error) => {
+        setRunState('error')
+        setActivity(error instanceof Error ? error.message : '无法连接后端服务，请确认后端已启动后重试。')
+      })
+  }, [])
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const tag = (event.target as HTMLElement)?.tagName
@@ -237,8 +317,7 @@ export default function App() {
     setRunState('running'); setActivity('Generation started — waiting for result…')
     for (let attempt = 0; attempt < 900; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 1000))
-      const statusResponse = await fetch(`http://127.0.0.1:8000/api/runs/${runId}`)
-      if (!statusResponse.ok) continue
+      const statusResponse = await studioFetch(`/api/runs/${runId}`, undefined, '查询生成状态')
       const status = await statusResponse.json()
       if (status.status === 'succeeded') { applyRunResults(status); setRunState('success'); setActivity('Generation complete — result is shown on the node'); return }
       if (status.status === 'failed') { setRunState('error'); setActivity(status.error || 'Generation failed'); return }
@@ -251,39 +330,41 @@ export default function App() {
     if (!selectedNode || !['image_generate', 'video_generate'].includes(selectedNode.data.kind)) { setRunState('error'); setActivity('Select an image or video generation node first'); return }
     setRunState('running'); setActivity('Submitting selected node…')
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/workflows/neon-fox/nodes/${selectedNode.id}/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workflow: graphPayload(), confirmed: true }) })
-      if (!response.ok) { const detail = await response.json().catch(() => ({})); throw new Error(detail.detail?.errors?.join?.('; ') || detail.detail || 'Node generation request failed') }
+      const response = await studioFetch(`/api/workflows/neon-fox/nodes/${selectedNode.id}/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workflow: graphPayload(), confirmed: true }) }, '提交节点生成')
       const runInfo = await response.json()
       await waitForRun(runInfo.run_id)
     } catch (error) { setRunState('error'); setActivity(error instanceof Error ? error.message : 'Node generation request failed') }
   }
   const openLogs = async () => {
-    const response = await fetch('http://127.0.0.1:8000/api/logs/runs')
-    const result = await response.json()
-    setRunLogs(result.entries || [])
-    setLogOpen(true)
+    try {
+      const response = await studioFetch('/api/logs/runs', undefined, '读取运行日志')
+      const result = await response.json()
+      setRunLogs(result.entries || [])
+      setLogOpen(true)
+    } catch (error) {
+      setRunState('error')
+      setActivity(error instanceof Error ? error.message : '无法读取运行日志。')
+    }
   }
   const preview = async () => {
     setPreviewOpen(true); setActivity('Building safe preview…')
     try {
       const payload = graphPayload()
-      const response = await fetch('http://127.0.0.1:8000/api/workflows/neon-fox/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      const response = await studioFetch('/api/workflows/neon-fox/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }, '生成安全预览')
       const result = await response.json(); setConfirmationToken(result.confirmation_token || null); setPreviewPayload(result); setActivity(result.valid === false ? 'Preview found validation issues' : 'Preview ready — no API call made')
-    } catch { setActivity('Preview is available after starting the backend') }
+    } catch (error) { setPreviewOpen(false); setRunState('error'); setActivity(error instanceof Error ? error.message : '无法连接后端服务，请确认后端已启动后重试。') }
   }
   const run = async () => {
     if (!confirmationToken) { setRunState('error'); setActivity('Preview the workflow first, then confirm generation'); return }
     setRunState('running'); setActivity('Awaiting API confirmation…')
     try {
       const payload = { ...graphPayload(), confirmed: true, confirmation_token: confirmationToken }
-      const response = await fetch('http://127.0.0.1:8000/api/workflows/neon-fox/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-      if (!response.ok) throw new Error()
+      const response = await studioFetch('/api/workflows/neon-fox/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }, '提交工作流生成')
       const runInfo = await response.json()
       setRunState('running'); setActivity('Generation started — waiting for result…')
       for (let attempt = 0; attempt < 900; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 1000))
-        const statusResponse = await fetch(`http://127.0.0.1:8000/api/runs/${runInfo.run_id}`)
-        if (!statusResponse.ok) continue
+        const statusResponse = await studioFetch(`/api/runs/${runInfo.run_id}`, undefined, '查询生成状态')
         const status = await statusResponse.json()
         if (status.status === 'succeeded') {
           applyRunResults(status)
@@ -297,7 +378,7 @@ export default function App() {
         const latestEvent = status.events && status.events.length ? status.events[status.events.length - 1] : null
         setActivity(`Generation in progress… ${latestEvent?.message || ''}`)
       }
-    } catch { setRunState('error'); setActivity('Run blocked — check backend, API key, and public asset URLs') }
+    } catch (error) { setRunState('error'); setActivity(error instanceof Error ? error.message : '生成请求失败，请查看运行日志。') }
   }
   const updateData = (key: keyof NodeData, value: string | number) => setNodes((current) => current.map((node) => node.id === selected ? { ...node, data: { ...node.data, [key]: value } } : node))
 

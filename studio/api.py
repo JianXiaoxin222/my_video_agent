@@ -35,6 +35,18 @@ def create_app():
     def health():
         return {"ok": True, "service": "video-agent-studio"}
 
+    @app.post("/api/client-errors")
+    def client_error(payload: dict[str, Any]):
+        """Record a UI-visible error in the same Studio audit log."""
+        record_studio_event(
+            "client_error",
+            source="studio-ui",
+            action=str(payload.get("action") or "unknown"),
+            message=str(payload.get("message") or "Unknown UI error"),
+            status_code=payload.get("status_code"),
+        )
+        return {"ok": True}
+
     @app.get("/api/models")
     def models():
         image_cfg = load_config_or_default("config/seedream.yaml", default={}).get("seedream", {})
