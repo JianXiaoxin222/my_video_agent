@@ -97,14 +97,17 @@ def create_app():
         workflow = Workflow.from_dict(payload) if payload else repository.get_workflow(workflow_id)
         if not workflow:
             raise HTTPException(404, "Workflow not found")
-        return validate_workflow(workflow, require_public_assets=False).as_dict()
+        # The UI calls this endpoint immediately before node generation. Use
+        # the same asset rules as execution so inline data URLs connected to a
+        # video node are rejected before a paid Seedance request is submitted.
+        return validate_workflow(workflow, require_public_assets=True).as_dict()
 
     @app.post("/api/workflows/{workflow_id}/preview")
     def preview(workflow_id: str, payload: dict[str, Any] | None = None):
         workflow = Workflow.from_dict(payload) if payload else repository.get_workflow(workflow_id)
         if not workflow:
             raise HTTPException(404, "Workflow not found")
-        result = validate_workflow(workflow).as_dict()
+        result = validate_workflow(workflow, require_public_assets=True).as_dict()
         if not result["valid"]:
             return {"valid": False, **result}
         token = secrets.token_urlsafe(24)

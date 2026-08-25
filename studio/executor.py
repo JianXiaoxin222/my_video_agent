@@ -144,7 +144,18 @@ class WorkflowExecutor:
                         reference = normalized_references[0] if normalized_references else None
                     path, url = image_client.generate_image_url(prompt=inputs.get("prompt", data.get("prompt", "")), output_path=out_path,
                         reference_image=reference, model=data.get("model") or image_client.default_model, size=data.get("size"), watermark=data.get("watermark"))
-                    values[node_id] = {"type": "image_result", "path": str(path), "url": url or self._artifact_url(Path(path))}
+                    public_url = url if isinstance(url, str) and url.startswith(("http://", "https://")) else None
+                    if not public_url:
+                        try:
+                            public_url = self.storage.upload(path)
+                        except (ValueError, RuntimeError, FileNotFoundError) as exc:
+                            raise ValueError(
+                                "Generated image has no public URL; configure VIDEO_AGENT_S3_* "
+                                "to upload it before image-to-video generation"
+                            ) from exc
+                        if not isinstance(public_url, str) or not public_url.startswith(("http://", "https://")):
+                            raise ValueError("Image storage provider must return a public http(s) URL")
+                    values[node_id] = {"type": "image_result", "path": str(path), "url": public_url}
                 elif node.type == "video_generate":
                     video_client = video_client or SeedanceClient()
                     out_dir = project_dir / "raw_videos"

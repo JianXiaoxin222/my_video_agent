@@ -93,7 +93,14 @@ def preview_workflow(workflow: Workflow, *, storage: StorageProvider | None = No
             payload = {"kind": "image", "mode": infer_generation_mode(workflow, node_id) or ("image_to_image" if reference else "text_to_image"), "prompt": prompt, "image": reference,
                        "model": data.get("model") or "doubao-seedream-5-0-pro-260628", "size": data.get("size", "1920x1080"), "watermark": bool(data.get("watermark", False))}
             payloads.append(payload)
-            values[node_id] = {"type": "image_result", "preview": payload}
+            # Keep a previously generated public URL attached to the node so
+            # a subsequent preview can show the actual image-to-video input.
+            # The first preview (before generation) intentionally has no URL;
+            # the real executor fills it from Seedream's response.
+            result = data.get("result") if isinstance(data.get("result"), dict) else {}
+            result_url = result.get("url") if isinstance(result.get("url"), str) else None
+            result_path = result.get("path") if isinstance(result.get("path"), str) else None
+            values[node_id] = {"type": "image_result", "url": result_url, "path": result_path, "preview": payload}
         elif node.type == "video_generate":
             prompt = inputs.get("prompt", data.get("prompt", ""))
             image_urls = data.get("image_urls") or inputs.get("image") or []

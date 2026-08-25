@@ -40,6 +40,160 @@ class StudioWorkflowTests(unittest.TestCase):
         blocks = build_content_blocks("edit", ["https://a/image.jpg", "https://b/image.jpg"], "https://c/video.mp4")
         self.assertEqual([block["type"] for block in blocks], ["text", "image_url", "image_url", "video_url"])
 
+    def test_preview_reuses_generated_image_result_url_for_video(self):
+        workflow = Workflow.from_dict({
+            "id": "generated-to-video", "title": "Generated To Video", "nodes": [
+                {"id": "prompt", "type": "text_input", "data": {"text": "animate this"}},
+                {"id": "image", "type": "image_generate", "data": {
+                    "result": {"type": "image_result", "url": "https://cdn.example.com/generated.jpg"},
+                }},
+                {"id": "video", "type": "video_generate", "data": {}},
+            ],
+            "edges": [
+                {"id": "prompt-image", "source": "prompt", "target": "image", "source_handle": "text", "target_handle": "prompt"},
+                {"id": "image-video", "source": "image", "target": "video", "source_handle": "image", "target_handle": "image"},
+            ],
+        })
+        payload = preview_workflow(workflow)["payloads"][1]
+        self.assertEqual(payload["mode"], "image_to_video")
+        self.assertEqual(payload["content"][0]["image_url"]["url"], "https://cdn.example.com/generated.jpg")
+
+    def test_multiple_generated_image_results_preserve_order_for_video(self):
+        workflow = Workflow.from_dict({
+            "id": "generated-images", "title": "Generated Images", "nodes": [
+                {"id": "a", "type": "image_generate", "data": {
+                    "result": {"type": "image_result", "url": "https://cdn.example.com/a.jpg"},
+                }},
+                {"id": "b", "type": "image_generate", "data": {
+                    "result": {"type": "image_result", "url": "https://cdn.example.com/b.jpg"},
+                }},
+                {"id": "video", "type": "video_generate", "data": {}},
+            ],
+            "edges": [
+                {"id": "a-video", "source": "a", "target": "video", "source_handle": "image", "target_handle": "image"},
+                {"id": "b-video", "source": "b", "target": "video", "source_handle": "image", "target_handle": "image"},
+            ],
+        })
+        payload = preview_workflow(workflow)["payloads"][-1]
+        urls = [block["image_url"]["url"] for block in payload["content"]]
+        self.assertEqual(urls, ["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.jpg"])
+
+    def test_generated_image_without_url_is_uploaded_before_video_generation(self):
+        class FakeImage:
+            default_model = "fake-image"
+            def generate_image_url(self, prompt, output_path, **kwargs):
+                Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+                Path(output_path).write_bytes(b"fake-image")
+                return Path(output_path), ""
+
+        class FakeStorage:
+            def __init__(self):
+                self.uploaded = None
+            def upload(self, path):
+                self.uploaded = Path(path)
+                return "https://cdn.example.com/uploads/generated.jpg"
+            def resolve(self, value):
+                return value
+
+        class FakeVideo:
+            default_model = "fake-video"
+            def __init__(self):
+                self.content = None
+            def generate(self, *, content, output_path, **kwargs):
+                self.content = content
+                Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+                Path(output_path).write_bytes(b"fake-video")
+                return Path(output_path)
+
+        workflow = Workflow.from_dict({
+            "id": "generated-no-url", "title": "Generated No URL", "nodes": [
+                {"id": "image", "type": "image_generate", "data": {}},
+                {"id": "video", "type": "video_generate", "data": {}},
+            ],
+            "edges": [{"id": "image-video", "source": "image", "target": "video", "source_handle": "image", "target_handle": "image"}],
+        })
+        storage = FakeStorage()
+        video = FakeVideo()
+        with tempfile.TemporaryDirectory() as directory:
+            repo = StudioRepository(Path(directory) / "studio.db")
+            executor = WorkflowExecutor(repo, image_client=FakeImage(), video_client=video, storage=storage)
+            run_id = executor.run(workflow, node_ids=["video"])
+            for _ in range(100):
+                run = repo.get_run(run_id)
+                if run and run["status"] in {"succeeded", "failed"}:
+                    break
+                import time
+                time.sleep(0.01)
+        self.assertEqual(run["status"], "succeeded")
+        self.assertIsNotNone(storage.uploaded)
+        self.assertEqual(video.content[0]["image_url"]["url"], "https://cdn.example.com/uploads/generated.jpg")
+
+    def test_local_image_path_is_uploaded_before_video_generation(self):
+        class FakeStorage:
+            def __init__(self):
+                self.resolved = []
+            def resolve(self, value):
+                self.resolved.append(str(value))
+                return "https://cdn.example.com/uploads/source.png"
+
+        class FakeVideo:
+            default_model = "fake-video"
+            def __init__(self):
+                self.content = None
+            def generate(self, *, content, output_path, **kwargs):
+                self.content = content
+                Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+                Path(output_path).write_bytes(b"fake-video")
+                return Path(output_path)
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.png"
+            source.write_bytes(b"image-bytes")
+            workflow = Workflow.from_dict({
+                "id": "local-image-video", "title": "Local Image Video", "nodes": [
+                    {"id": "asset", "type": "image_input", "data": {"path": str(source)}},
+                    {"id": "video", "type": "video_generate", "data": {}},
+                ],
+                "edges": [{"id": "asset-video", "source": "asset", "target": "video", "source_handle": "image", "target_handle": "image"}],
+            })
+            storage = FakeStorage()
+            video = FakeVideo()
+            repo = StudioRepository(Path(directory) / "studio.db")
+            executor = WorkflowExecutor(repo, video_client=video, storage=storage)
+            run_id = executor.run(workflow, node_ids=["video"])
+            for _ in range(100):
+                run = repo.get_run(run_id)
+                if run and run["status"] in {"succeeded", "failed"}:
+                    break
+                import time
+                time.sleep(0.01)
+            self.assertEqual(run["status"], "succeeded")
+            self.assertEqual(storage.resolved, [str(source)])
+            self.assertEqual(video.content[0]["image_url"]["url"], "https://cdn.example.com/uploads/source.png")
+
+    def test_upload_endpoint_uses_public_storage_url(self):
+        from fastapi.testclient import TestClient
+        import studio.api as studio_api
+
+        class FakeStorage:
+            def upload(self, path):
+                self.path = Path(path)
+                return "https://cdn.example.com/uploads/source.png"
+
+        provider = FakeStorage()
+        original_provider = studio_api.configured_provider
+        studio_api.configured_provider = lambda: provider
+        try:
+            response = TestClient(studio_api.create_app()).post(
+                "/api/assets/upload",
+                files={"file": ("source.png", b"image-bytes", "image/png")},
+            )
+        finally:
+            studio_api.configured_provider = original_provider
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["url"], "https://cdn.example.com/uploads/source.png")
+        self.assertEqual(provider.path.name, "source.png")
+
     def test_repository_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = StudioRepository(Path(directory) / "studio.db")
@@ -230,6 +384,28 @@ class StudioWorkflowTests(unittest.TestCase):
                 time.sleep(0.01)
             self.assertEqual(run["status"], "succeeded")
             self.assertEqual(fake_image.reference_image, image_bytes_to_data_url(image_path.read_bytes(), filename="source.png"))
+
+    def test_preview_rejects_inline_image_for_video_before_run(self):
+        from fastapi.testclient import TestClient
+
+        workflow = {
+            "id": "inline-preview", "title": "Inline Preview", "nodes": [
+                {"id": "asset", "type": "image_input", "data": {"url": "data:image/png;base64,AA=="}},
+                {"id": "video", "type": "video_generate", "data": {}},
+            ],
+            "edges": [{"id": "asset-video", "source": "asset", "target": "video", "source_handle": "image", "target_handle": "image"}],
+        }
+        client = TestClient(create_app())
+        response = client.post("/api/workflows/inline-preview/preview", json=workflow)
+        self.assertEqual(response.status_code, 200)
+        result = response.json()
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("public" in error.lower() for error in result["errors"]))
+
+        # The node-level UI action uses /validate before submitting generation.
+        validation = client.post("/api/workflows/inline-preview/validate", json=workflow)
+        self.assertEqual(validation.status_code, 200)
+        self.assertFalse(validation.json()["valid"])
 
     def test_upload_endpoint_returns_inline_image_without_storage_provider(self):
         from fastapi.testclient import TestClient
