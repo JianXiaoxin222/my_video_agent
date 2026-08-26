@@ -10,6 +10,7 @@ from .models import Workflow
 from .repository import StudioRepository
 from .storage import configured_provider, image_bytes_to_data_url
 from .validation import validate_workflow
+from .projects import list_project_names, project_directory, validate_project_name
 from agents.common import PROJECT_ROOT
 from agents.common.config_loader import load_config_or_default
 from agents.common.log_writer import install_error_logging, record_error
@@ -34,6 +35,12 @@ def create_app():
     repository = StudioRepository()
     executor = WorkflowExecutor(repository)
     confirmation_tokens: dict[str, str] = {}
+
+    def ensure_workflow_project(workflow: Workflow) -> None:
+        try:
+            project_directory(workflow.project_name)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.get("/api/health")
     def health():
@@ -62,6 +69,21 @@ def create_app():
             "video": {"default": video_models.get("default", "doubao-seedance-2-0-mini-260615"), "options": [video_models.get("default", "doubao-seedance-2-0-mini-260615"), video_models.get("pro", "doubao-seedance-2-0-260128")]},
         }
 
+    @app.get("/api/projects")
+    def projects():
+        return {"projects": list_project_names(), "default": "default"}
+
+    @app.post("/api/projects")
+    def create_project(payload: dict[str, Any]):
+        try:
+            name = validate_project_name(payload.get("name"))
+            existing = project_directory(name, create=False).exists()
+            path = project_directory(name)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(409, f"Project directory cannot be created: {exc}") from exc
+        return {"name": name, "created": not existing}
     @app.get("/api/logs/runs")
     def run_logs(limit: int = 100):
         # Studio lifecycle records live in result files; rejected runs and
@@ -92,6 +114,8 @@ def create_app():
     @app.post("/api/workflows")
     def create_workflow(payload: dict[str, Any]):
         workflow = Workflow.from_dict(payload)
+        ensure_workflow_project(workflow)
+
         repository.save_workflow(workflow)
         return workflow.to_dict()
 
@@ -106,6 +130,8 @@ def create_app():
     def update_workflow(workflow_id: str, payload: dict[str, Any]):
         payload["id"] = workflow_id
         workflow = Workflow.from_dict(payload)
+        ensure_workflow_project(workflow)
+
         repository.save_workflow(workflow)
         return workflow.to_dict()
 
@@ -114,6 +140,7 @@ def create_app():
         workflow = Workflow.from_dict(payload) if payload else repository.get_workflow(workflow_id)
         if not workflow:
             raise HTTPException(404, "Workflow not found")
+        ensure_workflow_project(workflow)
         # The UI calls this endpoint immediately before node generation. Use
         # the same asset rules as execution so inline data URLs connected to a
         # video node are rejected before a paid Seedance request is submitted.
@@ -124,6 +151,7 @@ def create_app():
         workflow = Workflow.from_dict(payload) if payload else repository.get_workflow(workflow_id)
         if not workflow:
             raise HTTPException(404, "Workflow not found")
+        ensure_workflow_project(workflow)
         result = validate_workflow(workflow, require_public_assets=True).as_dict()
         if not result["valid"]:
             return {"valid": False, **result}
@@ -141,6 +169,7 @@ def create_app():
         if not payload or payload.get("confirmed") is not True or payload.get("confirmation_token") != confirmation_tokens.get(workflow_id):
             record_studio_event("run_rejected", workflow_id=workflow_id, reason="confirmation_required")
             raise HTTPException(409, "Explicit confirmation is required before API execution")
+        ensure_workflow_project(workflow)
         validation = validate_workflow(workflow, require_public_assets=True)
         if not validation.valid:
             record_studio_event("run_rejected", workflow_id=workflow_id, reason="validation", errors=validation.errors)
@@ -160,6 +189,7 @@ def create_app():
         node = workflow.node_map()[node_id]
         if node.type not in {"image_generate", "video_generate"}:
             raise HTTPException(422, "Only image_generate and video_generate nodes can be run individually")
+        ensure_workflow_project(workflow)
         validation = validate_workflow(workflow, require_public_assets=True)
         if not validation.valid:
             record_studio_event("run_rejected", workflow_id=workflow_id, node_id=node_id, errors=validation.errors)

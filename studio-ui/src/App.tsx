@@ -7,6 +7,8 @@ import {
 import { ArrowDown, ArrowUp, CheckCircle2, ChevronDown, CircleHelp, FileImage, Film, GripVertical, History, ImagePlus, LayoutGrid, Plus, Save, Settings2, Sparkles, Terminal, Trash2, Upload, WandSparkles, XCircle } from 'lucide-react'
 import '@xyflow/react/dist/style.css'
 
+type ProjectResponse = { projects: string[]; default: string }
+
 type NodeData = { label: ReactNode; kind: string; mode?: string; model?: string; prompt?: string; url?: string; localPreview?: string; fileName?: string; uploadState?: 'idle' | 'uploading' | 'uploaded' | 'error'; duration?: number; ratio?: string; resolution?: string; result?: { type: string; url?: string }; onSelect?: () => void }
 
 // Start with one clean generation node. Inputs are configured in the inspector
@@ -270,6 +272,8 @@ export default function App() {
   const [resultPreview, setResultPreview] = useState<{ type: string; url?: string; path?: string } | null>(null)
   const [logOpen, setLogOpen] = useState(false)
   const [runLogs, setRunLogs] = useState<Array<Record<string, unknown>>>([])
+  const [projects, setProjects] = useState<string[]>(['default'])
+  const [projectName, setProjectName] = useState('default')
 
   const selectedNode = useMemo(() => nodes.find((node) => node.id === selected), [nodes, selected])
   const onConnect = useCallback((params: Connection) => {
@@ -347,9 +351,57 @@ export default function App() {
     setSelected('')
     setActivity('Node deleted')
   }, [selected, setNodes, setEdges])
+  const restoreWorkflow = async (fallbackProject: string) => {
+    const response = await fetch(`${STUDIO_API}/api/workflows/neon-fox`)
+    if (response.status === 404) return
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const workflow = await response.json()
+    const restoredNodes = (workflow.nodes || []).map((node: any) => ({
+      id: String(node.id),
+      type: 'default',
+      position: node.position || { x: 0, y: 0 },
+      data: { ...(node.data || {}), kind: node.type, label: node.data?.label || node.type },
+    })) as Node<NodeData>[]
+    if (restoredNodes.length) {
+      setNodes(restoredNodes)
+      setSelected(restoredNodes[0].id)
+    }
+    setEdges((workflow.edges || []) as Edge[])
+    const savedProject = typeof workflow.project_name === 'string' && workflow.project_name ? workflow.project_name : fallbackProject
+    setProjectName(savedProject)
+    setProjects((current) => current.includes(savedProject) ? current : [...current, savedProject].sort())
+  }
+  const chooseProject = async (value: string) => {
+    if (value === '__new__') {
+      const requested = window.prompt('新建项目文件夹名称')?.trim()
+      if (!requested) return
+      try {
+        const response = await studioFetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: requested }) }, '创建项目')
+        const result = await response.json() as { name: string }
+        setProjects((current) => current.includes(result.name) ? current : [...current, result.name].sort())
+        setProjectName(result.name)
+        setActivity(`当前项目：${result.name}`)
+      } catch (error) {
+        setActivity(error instanceof Error ? error.message : '项目创建失败')
+      }
+      return
+    }
+    setProjectName(value || 'default')
+    setActivity(`当前项目：${value || 'default'}`)
+  }
+
   useEffect(() => {
     void studioFetch('/api/health', undefined, '检查后端服务')
-      .then(async () => { await flushPendingClientErrors(); setActivity('后端服务已连接，可以开始构建工作流') })
+      .then(async () => {
+        await flushPendingClientErrors()
+        const projectResponse = await studioFetch('/api/projects', undefined, '读取项目列表')
+        const projectData = await projectResponse.json() as ProjectResponse
+        const availableProjects = projectData.projects?.length ? projectData.projects : ['default']
+        setProjects(availableProjects)
+        setProjectName(projectData.default || 'default')
+        await restoreWorkflow(projectData.default || 'default')
+        setActivity('后端服务已连接，可以开始构建工作流')
+      })
       .catch((error) => {
         setRunState('error')
         setActivity(error instanceof Error ? error.message : '无法连接后端服务，请确认后端已启动后重试。')
@@ -363,7 +415,7 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [deleteSelected])
-  const graphPayload = () => ({ schema_version: 1, id: 'neon-fox', title: 'Neon Fox', nodes: nodes.map(({ id, position, data }) => { const { onSelect, localPreview, fileName, uploadState, ...serializableData } = data; return { id, type: data.kind, position, data: serializableData } }), edges })
+  const graphPayload = () => ({ schema_version: 1, id: 'neon-fox', title: 'Neon Fox', project_name: projectName, nodes: nodes.map(({ id, position, data }) => { const { onSelect, localPreview, fileName, uploadState, ...serializableData } = data; return { id, type: data.kind, position, data: serializableData } }), edges })
   const applyRunResults = (status: any) => {
     const values = Object.entries(status.results || {}) as Array<[string, { type?: string; url?: string; path?: string }]>
     const resultById = new Map(values.filter(([, value]) => value.type === 'image_result' || value.type === 'video_result').map(([id, value]) => [id, value]))
@@ -462,7 +514,7 @@ export default function App() {
   return <div className="studio-shell">
     <header className="topbar">
       <div className="brand"><div className="brand-mark"><Sparkles size={16} /></div><div><strong>Video Agent</strong><span>Studio</span></div><ChevronDown size={15} className="muted" /></div>
-      <div className="project-title"><span className="live-dot" /> Neon Fox / <b>Untitled workflow</b><span className="saved-label">Saved just now</span></div>
+      <div className="project-title"><span className="live-dot" /> 项目 <select className="project-select" value={projectName} onChange={(event) => { void chooseProject(event.target.value) }} aria-label="当前项目">{projects.map((name) => <option key={name} value={name}>{name}</option>)}<option value="__new__">＋ 新建项目</option></select><b>/ Neon Fox</b><span className="saved-label">Saved just now</span></div>
       <div className="top-actions"><button className="icon-btn" aria-label="History"><History size={17} /></button><button className="icon-btn" aria-label="Settings"><Settings2 size={17} /></button><button className="secondary-btn" onClick={save}><Save size={15} /> Save</button></div>
     </header>
     <main className="workspace">

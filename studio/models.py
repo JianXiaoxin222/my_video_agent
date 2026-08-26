@@ -85,6 +85,7 @@ class WorkflowEdge:
 class Workflow:
     id: str = field(default_factory=lambda: uuid4().hex)
     title: str = "Untitled workflow"
+    project_name: str = "default"
     schema_version: int = 1
     nodes: list[WorkflowNode] = field(default_factory=list)
     edges: list[WorkflowEdge] = field(default_factory=list)
@@ -94,6 +95,7 @@ class Workflow:
         return cls(
             id=str(value.get("id") or uuid4().hex),
             title=str(value.get("title") or "Untitled workflow"),
+            project_name=str(value.get("project_name") or "default"),
             schema_version=int(value.get("schema_version", 1)),
             nodes=[WorkflowNode.from_dict(n) for n in value.get("nodes", [])],
             edges=[WorkflowEdge.from_dict(e) for e in value.get("edges", [])],

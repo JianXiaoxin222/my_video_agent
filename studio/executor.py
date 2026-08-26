@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -16,6 +17,7 @@ from .models import Workflow, infer_generation_mode
 from .repository import StudioRepository
 from .storage import StorageProvider, configured_provider, image_file_to_data_url
 from .validation import topological_order
+from .projects import project_directory
 from .contracts import load_script_project, write_script_project
 from .audit import record_studio_event
 
@@ -67,6 +69,17 @@ class WorkflowExecutor:
             raise ValueError("Seedance image reference is empty")
         return raw
 
+    @staticmethod
+    def _unique_image_output_path(project_dir: Path) -> Path:
+        output_dir = project_dir / "character_images"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().astimezone().strftime("%Y_%m_%d_%H_%M_%S_%f")[:-3]
+        candidate = output_dir / f"generate_image_{stamp}.jpg"
+        suffix = 1
+        while candidate.exists():
+            candidate = output_dir / f"generate_image_{stamp}_{suffix:03d}.jpg"
+            suffix += 1
+        return candidate
     def run(self, workflow: Workflow, *, run_id: str | None = None, node_ids: list[str] | None = None) -> str:
         run_id = run_id or uuid4().hex
         self.repository.save_run(run_id, workflow.id, "queued", {"events": []})
@@ -90,8 +103,7 @@ class WorkflowExecutor:
                             selected.add(edge.source)
                             changed = True
             values: dict[str, Any] = {}
-            safe_title = "".join(char if char.isalnum() or char in "._- " else "_" for char in workflow.title).strip() or "project"
-            project_dir = PROJECT_ROOT / "output" / "projects" / safe_title
+            project_dir = project_directory(workflow.project_name)
             image_client = self.image_client
             video_client = self.video_client
             for index, node_id in enumerate(ordered, start=1):
@@ -127,11 +139,7 @@ class WorkflowExecutor:
                         values[node_id] = self.storage.resolve(str(source))
                 elif node.type == "image_generate":
                     image_client = image_client or SeedreamClient()
-                    out_dir = project_dir / "character_images"
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    name = str(data.get("name", node_id))
-                    safe_name = "".join(char if char.isalnum() or char in "._- " else "_" for char in name).strip() or node_id
-                    out_path = out_dir / f"{safe_name}.jpg"
+                    out_path = self._unique_image_output_path(project_dir)
                     reference = inputs.get("reference", data.get("reference_image"))
                     references = reference if isinstance(reference, list) else [reference]
                     normalized_references: list[str] = []
