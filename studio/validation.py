@@ -41,11 +41,6 @@ def _is_public_url(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
-def _is_inline_image(value: str) -> bool:
-    """Seedream accepts an image data URL for local image-to-image input."""
-    return value.startswith("data:image/") and ";base64," in value
-
-
 def _value_for_handle(node: Any, handle: str | None) -> str | None:
     if not handle:
         return None
@@ -92,10 +87,10 @@ def validate_workflow(workflow: Workflow, *, require_public_assets: bool = False
             if node.data.get("last_frame") and (node.id, "last_frame") not in connected_inputs:
                 warnings.append(f"{node.id}: last_frame is legacy; connect an image node to make the dependency visible")
             if require_public_assets:
+                # Image addresses are deliberately passed through untouched.
+                # Seedance validates/fails them after the request is logged;
+                # preflight validation here hides the provider's useful error.
                 direct_assets: list[tuple[str, Any]] = [
-                    ("image_urls", node.data.get("image_urls")),
-                    ("first_frame", node.data.get("first_frame") or node.data.get("first_frame_url")),
-                    ("last_frame", node.data.get("last_frame") or node.data.get("last_frame_url")),
                     ("video_url", node.data.get("video_url")),
                     ("audio_url", node.data.get("audio_url")),
                 ]
@@ -112,17 +107,10 @@ def validate_workflow(workflow: Workflow, *, require_public_assets: bool = False
             source = node.data.get("url") or node.data.get("path")
             if not source and node.id in outgoing_sources:
                 errors.append(f"{node.id}: asset URL or local path is required")
-            elif source and require_public_assets:
+            elif source and require_public_assets and node.type == "video_input":
                 source = str(source)
                 if _is_public_url(source):
                     pass
-                elif node.type == "image_input" and _is_inline_image(source):
-                    # Inline image data is valid for Seedream image-to-image.
-                    # It is not a valid Seedance reference asset, which must
-                    # remain a public URL.
-                    video_targets = {edge.target for edge in workflow.edges if edge.source == node.id and edge.target in nodes}
-                    if any(nodes[target].type == "video_generate" for target in video_targets):
-                        errors.append(f"{node.id}: inline image data cannot be sent to Seedance; upload it and use a public URL")
                 else:
                     errors.append(f"{node.id}: asset must be a public http(s) URL or uploaded first")
 

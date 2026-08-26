@@ -168,8 +168,9 @@ class StudioWorkflowTests(unittest.TestCase):
                 import time
                 time.sleep(0.01)
             self.assertEqual(run["status"], "succeeded")
-            self.assertEqual(storage.resolved, [str(source)])
-            self.assertEqual(video.content[0]["image_url"]["url"], "https://cdn.example.com/uploads/source.png")
+            # Image references are passed through untouched; the provider decides whether the path is acceptable.
+            self.assertEqual(storage.resolved, [])
+            self.assertEqual(video.content[0]["image_url"]["url"], str(source))
 
     def test_upload_endpoint_uses_public_storage_url(self):
         from fastapi.testclient import TestClient
@@ -336,7 +337,7 @@ class StudioWorkflowTests(unittest.TestCase):
             self.assertEqual(run["status"], "succeeded")
             self.assertEqual(fake_image.reference_image, inline_image)
 
-    def test_inline_local_image_is_rejected_for_direct_video_input(self):
+    def test_inline_local_image_is_accepted_for_direct_video_input(self):
         workflow = Workflow.from_dict({
             "id": "inline-video", "title": "Inline Video", "nodes": [
                 {"id": "asset", "type": "image_input", "data": {"url": "data:image/png;base64,AA=="}},
@@ -345,8 +346,8 @@ class StudioWorkflowTests(unittest.TestCase):
             "edges": [{"id": "asset-video", "source": "asset", "target": "video", "source_handle": "image", "target_handle": "image"}],
         })
         result = validate_workflow(workflow, require_public_assets=True)
-        self.assertFalse(result.valid)
-        self.assertTrue(any("Seedance" in error for error in result.errors))
+        self.assertTrue(result.valid)
+        self.assertEqual(result.errors, [])
 
     def test_local_image_file_is_encoded_for_image_to_image(self):
         class FakeImage:
@@ -385,7 +386,7 @@ class StudioWorkflowTests(unittest.TestCase):
             self.assertEqual(run["status"], "succeeded")
             self.assertEqual(fake_image.reference_image, image_bytes_to_data_url(image_path.read_bytes(), filename="source.png"))
 
-    def test_preview_rejects_inline_image_for_video_before_run(self):
+    def test_preview_allows_inline_image_for_video_request(self):
         from fastapi.testclient import TestClient
 
         workflow = {
@@ -399,13 +400,13 @@ class StudioWorkflowTests(unittest.TestCase):
         response = client.post("/api/workflows/inline-preview/preview", json=workflow)
         self.assertEqual(response.status_code, 200)
         result = response.json()
-        self.assertFalse(result["valid"])
-        self.assertTrue(any("public" in error.lower() for error in result["errors"]))
+        self.assertTrue(result["valid"])
+        self.assertEqual(result.get("errors", []), [])
 
         # The node-level UI action uses /validate before submitting generation.
         validation = client.post("/api/workflows/inline-preview/validate", json=workflow)
         self.assertEqual(validation.status_code, 200)
-        self.assertFalse(validation.json()["valid"])
+        self.assertTrue(validation.json()["valid"])
 
     def test_upload_endpoint_returns_inline_image_without_storage_provider(self):
         from fastapi.testclient import TestClient

@@ -54,6 +54,19 @@ class WorkflowExecutor:
             raise ValueError("Seedance reference assets must be public http(s) URLs; configure object storage and upload the local file")
         return self.storage.resolve(raw)
 
+    @staticmethod
+    def _pass_seedance_image(value: Any) -> str:
+        """Pass an image reference through without URL pre-validation.
+
+        Seedance records and validates image references at the provider boundary.
+        Keeping the original value here allows its response (for example, an
+        inline-data rejection) to be captured in the normal request/error logs.
+        """
+        raw = _asset_value(value)
+        if not raw:
+            raise ValueError("Seedance image reference is empty")
+        return raw
+
     def run(self, workflow: Workflow, *, run_id: str | None = None, node_ids: list[str] | None = None) -> str:
         run_id = run_id or uuid4().hex
         self.repository.save_run(run_id, workflow.id, "queued", {"events": []})
@@ -162,11 +175,11 @@ class WorkflowExecutor:
                     out_dir = project_dir / "raw_videos"
                     out_dir.mkdir(parents=True, exist_ok=True)
                     image_values = data.get("image_urls") or inputs.get("image") or []
-                    image_urls = [self._resolve_seedance_asset(item) for item in _asset_list(image_values)]
+                    image_urls = [self._pass_seedance_image(item) for item in _asset_list(image_values)]
                     first_value = inputs.get("first_frame", data.get("first_frame") or data.get("first_frame_url"))
                     last_value = inputs.get("last_frame", data.get("last_frame") or data.get("last_frame_url"))
-                    first_frame = self._resolve_seedance_asset(first_value) if first_value else None
-                    last_frame = self._resolve_seedance_asset(last_value) if last_value else None
+                    first_frame = self._pass_seedance_image(first_value) if first_value else None
+                    last_frame = self._pass_seedance_image(last_value) if last_value else None
                     video_value = inputs.get("video", data.get("video_url"))
                     video_url = self._resolve_seedance_asset(video_value) if video_value else None
                     audio_value = data.get("audio_url")

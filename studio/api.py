@@ -64,9 +64,11 @@ def create_app():
 
     @app.get("/api/logs/runs")
     def run_logs(limit: int = 100):
-        # Studio lifecycle records now live in date-partitioned result files.
-        # Keep reading the legacy file so existing installations remain visible.
+        # Studio lifecycle records live in result files; rejected runs and
+        # provider failures are classified into error files. Include both so
+        # the UI can explain preflight/API failures instead of showing nothing.
         paths = sorted((PROJECT_ROOT / "logs" / "result").glob("studio_*.jsonl"))
+        paths += sorted((PROJECT_ROOT / "logs" / "error").glob("error_*.jsonl"))
         legacy = PROJECT_ROOT / "logs" / "studio_runs.jsonl"
         if legacy.exists():
             paths.append(legacy)
@@ -74,7 +76,14 @@ def create_app():
         for path in paths:
             for line in path.read_text(encoding="utf-8").splitlines():
                 try:
-                    entries.append(json.loads(line))
+                    entry = json.loads(line)
+                    # ``record_studio_event`` is kept under ``context`` by the
+                    # shared error writer; flatten Studio events for callers
+                    # that consume the legacy top-level event shape.
+                    context = entry.get("context")
+                    if isinstance(context, dict) and context.get("event"):
+                        entry = {**context, "timestamp_utc": entry.get("timestamp_utc"), "log_level": entry.get("level"), "message": entry.get("message")}
+                    entries.append(entry)
                 except json.JSONDecodeError:
                     entries.append({"raw": line})
         entries.sort(key=lambda item: item.get("timestamp_utc", ""))
