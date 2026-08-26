@@ -9,6 +9,8 @@ NODE_TYPES = {
     "text_input",
     "image_input",
     "video_input",
+    "audio_input",
+    "fetch",
     "image_generate",
     "video_generate",
     "script_project",
@@ -39,7 +41,7 @@ def infer_generation_mode(workflow: "Workflow", node_id: str) -> str | None:
             return "first_last_frame_to_video"
         if upstream_types & {"video_input", "video_generate"}:
             return "video_to_video"
-        if upstream_types & {"image_input", "image_generate"}:
+        if upstream_types & {"image_input", "image_generate", "fetch"}:
             return "image_to_video"
         return "text_to_video"
     return None
@@ -92,7 +94,7 @@ class Workflow:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Workflow":
-        return cls(
+        workflow = cls(
             id=str(value.get("id") or uuid4().hex),
             title=str(value.get("title") or "Untitled workflow"),
             project_name=str(value.get("project_name") or "default"),
@@ -100,7 +102,14 @@ class Workflow:
             nodes=[WorkflowNode.from_dict(n) for n in value.get("nodes", [])],
             edges=[WorkflowEdge.from_dict(e) for e in value.get("edges", [])],
         )
-
+        nodes = workflow.node_map()
+        media_sources = {"image_input", "image_generate", "video_input", "video_generate", "audio_input", "fetch"}
+        for edge in workflow.edges:
+            target = nodes.get(edge.target)
+            source = nodes.get(edge.source)
+            if target and source and target.type == "video_generate" and edge.target_handle == "prompt" and source.type in media_sources:
+                edge.target_handle = "references"
+        return workflow
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 

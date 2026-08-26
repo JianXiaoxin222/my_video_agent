@@ -12,13 +12,18 @@ PORT_TYPES: dict[str, dict[str, str]] = {
     "text_input": {"text": "text"},
     "image_input": {"image": "image"},
     "video_input": {"video": "video"},
+    "audio_input": {"audio": "audio"},
+    "fetch": {"image": "image"},
     "image_generate": {"prompt": "text", "reference": "image", "image": "image_result"},
     "video_generate": {
         "prompt": "text",
-        "image": "image_list",
+        "references": "media_list",
+        # Legacy aliases are accepted and normalized to references.
+        "image": "media_list",
+        "video": "media_list",
+        "audio": "media_list",
         "first_frame": "image",
         "last_frame": "image",
-        "video": "video",
         "video_result": "video_result",
     },
     "script_project": {"project": "script_project"},
@@ -31,9 +36,10 @@ class ValidationResult:
     valid: bool
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    error_details: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
-        return {"valid": self.valid, "errors": self.errors, "warnings": self.warnings}
+        return {"valid": self.valid, "errors": self.errors, "warnings": self.warnings, "error_details": self.error_details}
 
 
 def _is_public_url(value: str) -> bool:
@@ -50,6 +56,7 @@ def _value_for_handle(node: Any, handle: str | None) -> str | None:
 def validate_workflow(workflow: Workflow, *, require_public_assets: bool = False) -> ValidationResult:
     errors: list[str] = []
     warnings: list[str] = []
+    error_details: list[dict[str, Any]] = []
     nodes = workflow.node_map()
     outgoing_sources = {edge.source for edge in workflow.edges}
     connected_inputs = {(edge.target, edge.target_handle) for edge in workflow.edges}
@@ -103,17 +110,39 @@ def validate_workflow(workflow: Workflow, *, require_public_assets: bool = False
                             value = value.get("url") or value.get("path")
                         if value and not _is_public_url(str(value)):
                             errors.append(f"{node.id}.{field_name}: Seedance assets must be public http(s) URLs")
-        if node.type in {"image_input", "video_input"}:
+        if node.type in {"image_input", "video_input", "audio_input", "fetch"}:
             source = node.data.get("url") or node.data.get("path")
             if not source and node.id in outgoing_sources:
                 errors.append(f"{node.id}: asset URL or local path is required")
-            elif source and require_public_assets and node.type == "video_input":
+            elif source and require_public_assets and node.type in {"video_input", "audio_input", "fetch"}:
                 source = str(source)
                 if _is_public_url(source):
                     pass
                 else:
                     errors.append(f"{node.id}: asset must be a public http(s) URL or uploaded first")
 
+    if require_public_assets:
+        media_handles = {"references", "image", "video", "audio", "media", "first_frame", "last_frame"}
+        for edge in workflow.edges:
+            target = nodes.get(edge.target)
+            source = nodes.get(edge.source)
+            if not target or not source or target.type != "video_generate":
+                continue
+            if (edge.target_handle or edge.source_handle) not in media_handles:
+                continue
+            # Legacy image/video aliases remain executable for direct callers.
+            if edge.target_handle in {"image", "video", "audio", "media"}:
+                continue
+            raw = source.data.get("url") or source.data.get("path")
+            if source.type in {"image_input", "video_input", "audio_input", "fetch"} and raw and not _is_public_url(str(raw)):
+                errors.append(f"{edge.id}: Seedance reference assets must be public http(s) URLs; upload or fetch the asset first")
+                error_details.append({"edge_id": edge.id, "source_node": source.id, "source_port": edge.source_handle, "target_node": target.id, "target_port": edge.target_handle, "reason": "non_public_reference"})
+            if source.type in {"image_generate", "video_generate"}:
+                result = source.data.get("result") if isinstance(source.data.get("result"), dict) else {}
+                result_url = result.get("url")
+                if result and (not result_url or not _is_public_url(str(result_url))):
+                    errors.append(f"{edge.id}: generated reference must have a public http(s) URL before Seedance execution")
+                    error_details.append({"edge_id": edge.id, "source_node": source.id, "source_port": edge.source_handle, "target_node": target.id, "target_port": edge.target_handle, "reason": "non_public_generated_reference"})
     indegree = {node_id: 0 for node_id in nodes}
     adjacency: dict[str, list[str]] = {node_id: [] for node_id in nodes}
     for edge in workflow.edges:
@@ -122,9 +151,14 @@ def validate_workflow(workflow: Workflow, *, require_public_assets: bool = False
             continue
         source_type = _value_for_handle(nodes[edge.source], edge.source_handle)
         target_type = _value_for_handle(nodes[edge.target], edge.target_handle)
-        compatible = source_type == target_type or (source_type in {"image", "image_result"} and target_type == "image_list") or (source_type == "image_result" and target_type == "image")
+        media_types = {"image", "image_result", "video", "video_result", "audio", "audio_result"}
+        compatible = source_type == target_type or (target_type == "media_list" and source_type in media_types) or (source_type == "image_result" and target_type == "image")
         if source_type and target_type and target_type != "any" and not compatible:
-            errors.append(f"{edge.id}: incompatible ports {source_type} -> {target_type}")
+            message = f"{edge.id}: incompatible ports {source_type} -> {target_type}"
+            if target_type == "text" and source_type in media_types:
+                message += "; connect media outputs to video_generate.references"
+            errors.append(message)
+            error_details.append({"edge_id": edge.id, "source_node": edge.source, "source_port": edge.source_handle, "source_type": source_type, "target_node": edge.target, "target_port": edge.target_handle, "target_type": target_type, "reason": "incompatible_ports"})
         adjacency[edge.source].append(edge.target)
         indegree[edge.target] += 1
 
@@ -140,7 +174,7 @@ def validate_workflow(workflow: Workflow, *, require_public_assets: bool = False
     if visited != len(nodes):
         errors.append("Workflow must be a DAG; a cycle was detected")
 
-    return ValidationResult(valid=not errors, errors=errors, warnings=warnings)
+    return ValidationResult(valid=not errors, errors=errors, warnings=warnings, error_details=error_details)
 
 
 def topological_order(workflow: Workflow) -> list[str]:

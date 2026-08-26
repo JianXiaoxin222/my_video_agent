@@ -55,6 +55,12 @@ def create_app():
             action=str(payload.get("action") or "unknown"),
             message=str(payload.get("message") or "Unknown UI error"),
             status_code=payload.get("status_code"),
+            edge_id=payload.get("edge_id"),
+            source_node=payload.get("source_node"),
+            source_port=payload.get("source_port"),
+            target_node=payload.get("target_node"),
+            target_port=payload.get("target_port"),
+            reason=payload.get("reason"),
         )
         return {"ok": True}
 
@@ -141,10 +147,10 @@ def create_app():
         if not workflow:
             raise HTTPException(404, "Workflow not found")
         ensure_workflow_project(workflow)
-        # The UI calls this endpoint immediately before node generation. Use
-        # the same asset rules as execution so inline data URLs connected to a
-        # video node are rejected before a paid Seedance request is submitted.
-        return validate_workflow(workflow, require_public_assets=True).as_dict()
+        validation = validate_workflow(workflow, require_public_assets=True)
+        if not validation.valid:
+            record_studio_event("workflow_validation_error", workflow_id=workflow_id, errors=validation.errors, error_details=validation.error_details)
+        return validation.as_dict()
 
     @app.post("/api/workflows/{workflow_id}/preview")
     def preview(workflow_id: str, payload: dict[str, Any] | None = None):
@@ -152,13 +158,14 @@ def create_app():
         if not workflow:
             raise HTTPException(404, "Workflow not found")
         ensure_workflow_project(workflow)
-        result = validate_workflow(workflow, require_public_assets=True).as_dict()
+        validation = validate_workflow(workflow, require_public_assets=True)
+        result = validation.as_dict()
         if not result["valid"]:
+            record_studio_event("workflow_validation_error", workflow_id=workflow_id, errors=validation.errors, error_details=validation.error_details)
             return {"valid": False, **result}
         token = secrets.token_urlsafe(24)
         confirmation_tokens[workflow_id] = token
         return {"valid": True, "confirmation_token": token, **preview_workflow(workflow)}
-
     @app.post("/api/workflows/{workflow_id}/runs")
     def run(workflow_id: str, payload: dict[str, Any] | None = None):
         workflow_payload = payload.get("workflow") if payload and payload.get("workflow") else (payload if payload and payload.get("nodes") else None)
@@ -172,7 +179,7 @@ def create_app():
         ensure_workflow_project(workflow)
         validation = validate_workflow(workflow, require_public_assets=True)
         if not validation.valid:
-            record_studio_event("run_rejected", workflow_id=workflow_id, reason="validation", errors=validation.errors)
+            record_studio_event("run_rejected", workflow_id=workflow_id, reason="validation", errors=validation.errors, error_details=validation.error_details)
             raise HTTPException(422, validation.as_dict())
         confirmation_tokens.pop(workflow_id, None)
         run_id = executor.run(workflow, node_ids=payload.get("node_ids"))
@@ -192,7 +199,7 @@ def create_app():
         ensure_workflow_project(workflow)
         validation = validate_workflow(workflow, require_public_assets=True)
         if not validation.valid:
-            record_studio_event("run_rejected", workflow_id=workflow_id, node_id=node_id, errors=validation.errors)
+            record_studio_event("run_rejected", workflow_id=workflow_id, node_id=node_id, errors=validation.errors, error_details=validation.error_details)
             raise HTTPException(422, validation.as_dict())
         record_studio_event("run_requested", workflow_id=workflow_id, node_id=node_id, model=node.data.get("model"))
         run_id = executor.run(workflow, node_ids=[node_id])

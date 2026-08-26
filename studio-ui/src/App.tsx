@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
-  addEdge, Background, Controls, Handle, MiniMap, Position, ReactFlow, useEdgesState, useNodesState,
+  Background, Controls, Handle, MiniMap, Position, ReactFlow, useEdgesState, useNodesState,
   type Connection, type Edge, type Node,
 } from '@xyflow/react'
-import { ArrowDown, ArrowUp, CheckCircle2, ChevronDown, CircleHelp, FileImage, Film, GripVertical, History, ImagePlus, LayoutGrid, Plus, Save, Settings2, Sparkles, Terminal, Trash2, Upload, WandSparkles, XCircle } from 'lucide-react'
+import { ArrowDown, ArrowUp, CheckCircle2, ChevronDown, CircleHelp, Download, FileImage, Film, GripVertical, History, ImagePlus, LayoutGrid, Music, Plus, Save, Settings2, Sparkles, Terminal, Trash2, Upload, WandSparkles, XCircle } from 'lucide-react'
 import '@xyflow/react/dist/style.css'
 
 type ProjectResponse = { projects: string[]; default: string }
@@ -22,6 +22,8 @@ const initialEdges: Edge[] = []
 const palette = [
   { kind: 'image_input', label: '图片素材', icon: FileImage, detail: '本地文件 / 公网 URL' },
   { kind: 'video_input', label: '视频素材', icon: Film, detail: '本地文件 / 公网 URL' },
+  { kind: 'audio_input', label: '音频素材', icon: Music, detail: '公网 URL / 对象存储' },
+  { kind: 'fetch', label: 'Fetch 图片', icon: Download, detail: '远程图片 URL' },
   { kind: 'image_generate', label: '图片生成', icon: ImagePlus, detail: 'Text / image → image' },
   { kind: 'video_generate', label: '视频生成', icon: WandSparkles, detail: 'Text / image / video → video' },
 ]
@@ -31,15 +33,16 @@ function nodeClass(kind: string) {
 }
 
 function NodeCard({ node, selected, onSelect }: { node: Node<NodeData>; selected: boolean; onSelect: () => void }) {
-  const icon = node.data.kind === 'image_input' ? <FileImage size={15} /> : node.data.kind === 'video_input' ? <Film size={15} /> : node.data.kind === 'image_generate' ? <ImagePlus size={15} /> : <WandSparkles size={15} />
+  const icon = node.data.kind === 'image_input' || node.data.kind === 'fetch' ? <FileImage size={15} /> : node.data.kind === 'video_input' ? <Film size={15} /> : node.data.kind === 'audio_input' ? <Music size={15} /> : node.data.kind === 'image_generate' ? <ImagePlus size={15} /> : <WandSparkles size={15} />
   const assetPreview = node.data.localPreview || node.data.url
   return <div className={`${nodeClass(node.data.kind)} ${selected ? 'is-selected' : ''}`} onClick={onSelect} tabIndex={0} role="button" aria-label={`${node.data.label} node`}>
     <div className="node-head"><span className="node-icon">{icon}</span><span>{node.data.label}</span><span className="node-menu">•••</span></div>
     {(node.data.kind === 'image_generate' || node.data.kind === 'video_generate') && <div className="mode-chip">mode inferred from links</div>}
     {node.data.prompt && <p>{node.data.prompt}</p>}
     {assetPreview && <div className="asset-line"><Upload size={13} /> {node.data.fileName || assetPreview.replace(/^https?:\/\//, '').slice(0, 29)}{node.data.fileName ? '' : '…'}</div>}
-    {assetPreview && node.data.kind === 'image_input' && <div className="node-asset-media"><img src={assetSrc(assetPreview)} alt="Image asset" /></div>}
+    {assetPreview && (node.data.kind === 'image_input' || node.data.kind === 'fetch') && <div className="node-asset-media"><img src={assetSrc(assetPreview)} alt="Image asset" /></div>}
     {assetPreview && node.data.kind === 'video_input' && <div className="node-asset-media"><video src={assetSrc(assetPreview)} controls muted /></div>}
+    {node.data.kind === 'audio_input' && assetPreview && <div className="node-asset-media"><audio src={assetSrc(assetPreview)} controls /></div>}
     {node.data.result?.url && <div className="node-result-media">{node.data.result.type === 'video_result' ? <video src={assetSrc(node.data.result.url)} controls muted /> : <img src={assetSrc(node.data.result.url)} alt="Generated result" />}</div>}
     {node.data.kind === 'video_generate' && <div className="node-meta"><span>{node.data.ratio}</span><span>{node.data.duration}s</span><span>audio on</span></div>}
     <span className="port port-in" /><span className="port port-out" />
@@ -48,8 +51,8 @@ function NodeCard({ node, selected, onSelect }: { node: Node<NodeData>; selected
 
 function CanvasNode({ id, data, selected }: { id: string; data: NodeData; selected?: boolean }) {
   const node = { id, type: 'studio', position: { x: 0, y: 0 }, data } as Node<NodeData>
-  const targetHandles = data.kind === 'image_generate' ? ['prompt', 'reference'] : data.kind === 'video_generate' ? ['prompt', 'image', 'video'] : data.kind === 'output' ? ['input'] : []
-  const sourceHandle = data.kind === 'video_generate' ? 'video_result' : data.kind === 'image_generate' ? 'image' : data.kind === 'text_input' ? 'text' : data.kind === 'image_input' ? 'image' : data.kind === 'video_input' ? 'video' : 'output'
+  const targetHandles = data.kind === 'image_generate' ? ['prompt', 'reference'] : data.kind === 'video_generate' ? ['prompt', 'references'] : data.kind === 'output' ? ['input'] : []
+  const sourceHandle = data.kind === 'video_generate' ? 'video_result' : data.kind === 'image_generate' ? 'image' : data.kind === 'text_input' ? 'text' : data.kind === 'image_input' ? 'image' : data.kind === 'video_input' ? 'video' : data.kind === 'audio_input' ? 'audio' : data.kind === 'fetch' ? 'image' : 'output'
   return <>
     {targetHandles.map((handle, index) => <Handle key={handle} type="target" position={Position.Left} id={handle} style={{ top: `${35 + index * 22}%` }} />)}
     <NodeCard node={node} selected={Boolean(selected)} onSelect={data.onSelect ?? (() => {})} />
@@ -66,12 +69,43 @@ function inferMode(nodeId: string, nodes: Node<NodeData>[], edges: Edge[]) {
   if (node.data.kind === 'image_generate') return upstream.has('image_input') || upstream.has('image_generate') ? 'image-to-image' : 'text-to-image'
   if (node.data.kind === 'video_generate') {
     if (upstream.has('video_input') || upstream.has('video_generate')) return 'video-to-video'
-    if (upstream.has('image_input') || upstream.has('image_generate')) return 'image-to-video'
+    if (upstream.has('image_input') || upstream.has('image_generate') || upstream.has('fetch')) return 'image-to-video'
     return 'text-to-video'
   }
   return ''
 }
 
+function sourcePortType(kind: string, handle?: string | null) {
+  if (kind === 'text_input' || handle === 'text') return 'text'
+  if (kind === 'image_input' || kind === 'image_generate' || kind === 'fetch' || handle?.includes('image')) return 'image'
+  if (kind === 'video_input' || kind === 'video_generate' || handle?.includes('video')) return 'video'
+  if (kind === 'audio_input' || handle?.includes('audio')) return 'audio'
+  return undefined
+}
+
+function targetPortType(kind: string, handle?: string | null) {
+  if (kind === 'video_generate' && handle === 'references') return 'media_list'
+  if (kind === 'video_generate' && ['image', 'video', 'audio', 'media'].includes(handle || '')) return 'media_list'
+  if (kind === 'image_generate' && handle === 'reference') return 'image'
+  if (handle === 'prompt' || kind === 'text_input') return 'text'
+  return kind === 'output' ? 'any' : undefined
+}
+
+function compatiblePort(sourceType?: string, targetType?: string) {
+  if (!sourceType || !targetType || targetType === 'any') return true
+  if (sourceType === targetType) return true
+  return targetType === 'media_list' && ['image', 'video', 'audio'].includes(sourceType)
+}
+
+function edgeMediaKind(edge: Edge, nodes: Node<NodeData>[]) {
+  const source = nodes.find((node) => node.id === edge.source)
+  if (!source) return ''
+  const handle = edge.sourceHandle || edge.targetHandle || ''
+  if (source.data.kind === 'audio_input' || handle.includes('audio')) return 'audio'
+  if (source.data.kind === 'video_input' || source.data.kind === 'video_generate' || handle.includes('video')) return 'video'
+  if (source.data.kind === 'image_input' || source.data.kind === 'image_generate' || source.data.kind === 'fetch' || handle.includes('image')) return 'image'
+  return ''
+}
 function assetSrc(url?: string) {
   if (!url) return ''
   return url.startsWith('http://') || url.startsWith('https://') || url.startsWith('blob:') || url.startsWith('data:') ? url : `http://127.0.0.1:8000${url}`
@@ -90,8 +124,8 @@ function detailMessage(detail: unknown) {
   return ''
 }
 
-async function reportClientError(action: string, message: string, statusCode?: number) {
-  const payload = { action, message, status_code: statusCode }
+async function reportClientError(action: string, message: string, statusCode?: number, details?: Record<string, unknown>) {
+  const payload = { action, message, status_code: statusCode, ...(details || {}) }
   try {
     const response = await fetch(`${STUDIO_API}/api/client-errors`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -167,6 +201,9 @@ function Inspector({ selectedNode, nodes, edges, updateData, deleteSelected, onG
   const kind = selectedNode?.data.kind
   const isImageInput = kind === 'image_input'
   const isVideoInput = kind === 'video_input'
+  const isAudioInput = kind === 'audio_input'
+  const isFetch = kind === 'fetch'
+  const isAssetInput = isImageInput || isVideoInput || isAudioInput || isFetch
   const isImage = kind === 'image_generate'
   const isVideo = kind === 'video_generate'
   const mode = selectedNode ? inferMode(selectedNode.id, nodes, edges) : ''
@@ -177,9 +214,9 @@ function Inspector({ selectedNode, nodes, edges, updateData, deleteSelected, onG
     return nodes.find((node) => node.id === edge.target)?.data.kind === 'video_generate'
   }))
   const referenceEdges = selectedNode
-    ? edges.filter((edge) => edge.target === selectedNode.id && ['image', 'video'].includes((edge.targetHandle || edge.sourceHandle || '') as string))
+    ? edges.filter((edge) => edge.target === selectedNode.id && ['references', 'image', 'video', 'audio', 'media'].includes((edge.targetHandle || edge.sourceHandle || '') as string))
     : []
-  const imageReferenceEdges = referenceEdges.filter((edge) => (edge.targetHandle || edge.sourceHandle || '') === 'image')
+  const imageReferenceEdges = referenceEdges.filter((edge) => edgeMediaKind(edge, nodes) === 'image')
   const [draggingReference, setDraggingReference] = useState<string | null>(null)
 
   const appendReferenceToken = (token: string) => {
@@ -212,10 +249,10 @@ function Inspector({ selectedNode, nodes, edges, updateData, deleteSelected, onG
 
   return <aside className="inspector">
     <div className="inspector-head"><div><span className="eyebrow">SELECTED NODE</span><h2>{selectedNode?.data.label || 'Node'}</h2></div><button className="icon-btn danger-icon" onClick={deleteSelected} aria-label="Delete selected node"><Trash2 size={17} /></button></div>
-    {(isImageInput || isVideoInput) && selectedNode ? <>
-      <div className="inspector-section"><label htmlFor="asset-file">本地素材</label><input className="file-input" id="asset-file" type="file" accept={isImageInput ? 'image/*' : 'video/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) onUpload(file); event.currentTarget.value = '' }} /><label className="file-picker" htmlFor="asset-file"><Upload size={15} /> {selectedNode.data.uploadState === 'uploading' ? '上传中…' : '选择本地文件'}</label><p className="helper">{inlineImage && feedsVideo ? '当前图片是内联素材，不能用于图生视频；请配置对象存储，或填写可访问的公网 URL。' : inlineImage ? '本地图片已转为内联素材，可直接用于图生图；连接视频节点仍需公网 URL。' : isImageInput ? '图片会自动上传；未配置对象存储时也可作为内联素材直接用于图生图。' : '视频真实生成前需要配置素材存储服务，以提供公网 URL。'}</p></div>
+    {isAssetInput && selectedNode ? <>
+      <div className="inspector-section"><label htmlFor="asset-file">本地素材</label><input className="file-input" id="asset-file" type="file" accept={isImageInput || isFetch ? 'image/*' : isVideoInput ? 'video/*' : 'audio/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) onUpload(file); event.currentTarget.value = '' }} /><label className="file-picker" htmlFor="asset-file"><Upload size={15} /> {selectedNode.data.uploadState === 'uploading' ? '上传中…' : '选择本地文件'}</label><p className="helper">{inlineImage && feedsVideo ? '当前图片是内联素材，不能用于图生视频；请配置对象存储，或填写可访问的公网 URL。' : inlineImage ? '本地图片已转为内联素材，可直接用于图生图；连接视频节点仍需公网 URL。' : isImageInput ? '图片会自动上传；未配置对象存储时也可作为内联素材直接用于图生图。' : '视频真实生成前需要配置素材存储服务，以提供公网 URL。'}</p></div>
       <div className="inspector-section"><label htmlFor="asset-url">公网 URL</label><input id="asset-url" value={selectedNode.data.url || ''} placeholder="https://…" onChange={(event) => { updateData('url', event.target.value); updateData('localPreview', '') }} /><p className="helper">可以直接填写公网地址，也可以选择本地文件并上传。</p></div>
-      {assetPreview && <div className="inspector-asset-preview">{isImageInput ? <img src={assetSrc(assetPreview)} alt="Selected image asset" /> : <video src={assetSrc(assetPreview)} controls muted />}</div>}
+      {assetPreview && <div className="inspector-asset-preview">{isImageInput || isFetch ? <img src={assetSrc(assetPreview)} alt="Selected image asset" /> : isVideoInput ? <video src={assetSrc(assetPreview)} controls muted /> : <audio src={assetSrc(assetPreview)} controls />}</div>}
     </> : (isImage || isVideo) && selectedNode ? <>
       <div className="inspector-section"><label>Input mode</label><div className="auto-mode"><span className="status-dot green" /><b>{mode}</b><small>inferred from connected upstream nodes</small></div></div>
       {referenceEdges.length > 0 && <div className="inspector-section reference-guide"><label>提示词引用（按顺序）</label><div className="reference-list">
@@ -223,12 +260,14 @@ function Inspector({ selectedNode, nodes, edges, updateData, deleteSelected, onG
           const source = nodes.find((node) => node.id === edge.source)
           const sourcePreview = source?.data.localPreview || source?.data.result?.url || source?.data.url
           const sourceLabel = source?.data.fileName || (typeof source?.data.label === 'string' ? source.data.label : source?.id) || 'asset'
-          const handle = edge.targetHandle || edge.sourceHandle || ''
-          const isVideoRef = handle === 'video'
-          const imageNumber = referenceEdges.slice(0, index + 1).filter((item) => (item.targetHandle || item.sourceHandle || '') === 'image').length
-          const videoNumber = referenceEdges.slice(0, index + 1).filter((item) => (item.targetHandle || item.sourceHandle || '') === 'video').length
-          const token = isVideoRef ? '视频' + videoNumber : '图片' + imageNumber
-          const canReorder = !isVideoRef
+          const mediaKind = edgeMediaKind(edge, nodes)
+          const isVideoRef = mediaKind === 'video'
+          const isAudioRef = mediaKind === 'audio'
+          const imageNumber = referenceEdges.slice(0, index + 1).filter((item) => edgeMediaKind(item, nodes) === 'image').length
+          const videoNumber = referenceEdges.slice(0, index + 1).filter((item) => edgeMediaKind(item, nodes) === 'video').length
+          const audioNumber = referenceEdges.slice(0, index + 1).filter((item) => edgeMediaKind(item, nodes) === 'audio').length
+          const token = isVideoRef ? '视频' + videoNumber : isAudioRef ? '音频' + audioNumber : '图片' + imageNumber
+          const canReorder = mediaKind === 'image'
           const imageIndex = imageReferenceEdges.findIndex((item) => item.id === edge.id)
           return <div
             className={'reference-chip' + (draggingReference === edge.id ? ' is-dragging' : '')}
@@ -251,7 +290,7 @@ function Inspector({ selectedNode, nodes, edges, updateData, deleteSelected, onG
           </div>
         })}
       </div><p className="helper">拖动图片卡片或使用上下箭头调整顺序；当前顺序就是提示词中的图片1、图片2……。点击标签可插入引用。</p></div>}
-      <div className="inspector-section"><label htmlFor="prompt">Prompt</label><textarea id="prompt" value={selectedNode.data.prompt || ''} onChange={(event) => updateData('prompt', event.target.value)} /><p className="helper">输入提示词，或连接图片/视频素材；可点击上方图片1、图片2标签快速插入引用。</p></div>
+      <div className="inspector-section"><label htmlFor="prompt">Prompt</label><textarea id="prompt" value={selectedNode.data.prompt || ''} onChange={(event) => updateData('prompt', event.target.value)} /><p className="helper">输入文本提示词；图片、视频和音频请连接到上方的参考素材端口。</p></div>
       <div className="inspector-section"><label htmlFor="model">Model</label><select id="model" value={selectedNode.data.model || (isImage ? 'doubao-seedream-5-0-pro-260628' : 'doubao-seedance-2-0-mini-260615')} onChange={(event) => updateData('model', event.target.value)}>{isImage ? <option value="doubao-seedream-5-0-pro-260628">Seedream 5.0 Pro</option> : <><option value="doubao-seedance-2-0-mini-260615">Seedance 2.0 mini</option><option value="doubao-seedance-2-0-260128">Seedance 2.0</option></>}</select></div>
       {isVideo && <><div className="field-row"><div><label htmlFor="ratio">Ratio</label><select id="ratio" value={selectedNode.data.ratio || '16:9'} onChange={(event) => updateData('ratio', event.target.value)}><option>21:9</option><option>16:9</option><option>4:3</option><option>1:1</option><option>3:4</option><option>9:16</option></select></div><div><label htmlFor="duration">Duration</label><select id="duration" value={selectedNode.data.duration || 5} onChange={(event) => updateData('duration', Number(event.target.value))}><option value={4}>4 sec</option><option value={5}>5 sec</option><option value={10}>10 sec</option><option value={15}>15 sec</option></select></div></div><div className="field-row"><div><label htmlFor="resolution">Resolution</label><select id="resolution" value={selectedNode.data.resolution || '480p'} onChange={(event) => updateData('resolution', event.target.value)}><option>480p</option><option>720p</option><option>1080p</option><option>4k</option></select></div></div></>}
       <div className="cost-card"><div><span>Estimated generation</span><b>{isVideo ? ('~ ¥' + ((selectedNode.data.duration || 5) * 1).toFixed(0)) : 'Seedream 5.0'}</b></div><small>Review the connected inputs, then confirm to call the API.</small></div>
@@ -278,9 +317,21 @@ export default function App() {
   const selectedNode = useMemo(() => nodes.find((node) => node.id === selected), [nodes, selected])
   const onConnect = useCallback((params: Connection) => {
     if (!params.source || !params.target || params.source === params.target) return
-    setEdges((eds) => addEdge({ ...params, animated: true }, eds))
+    const source = nodes.find((node) => node.id === params.source)
+    const target = nodes.find((node) => node.id === params.target)
+    const sourceType = source ? sourcePortType(source.data.kind, params.sourceHandle) : undefined
+    const targetType = target ? targetPortType(target.data.kind, params.targetHandle) : undefined
+    if (!compatiblePort(sourceType, targetType)) {
+      const message = `incompatible ports ${sourceType || 'unknown'} -> ${targetType || 'unknown'}; connect media outputs to video_generate.references`
+      setRunState('error')
+      setActivity(message)
+      void reportClientError('工作流连线校验', message, undefined, { edge_id: 'xy-edge__' + params.source + '-' + params.target + '-' + Date.now(), source_node: params.source, source_port: params.sourceHandle, target_node: params.target, target_port: params.targetHandle, reason: 'incompatible_ports' })
+      return
+    }
+    const edgeId = 'xy-edge__' + params.source + '-' + params.target + '-' + Date.now() + '-' + Math.random().toString(36).slice(2)
+    setEdges((eds) => [...eds, { id: edgeId, ...params, animated: true } as Edge])
     setActivity('Nodes linked — media dependencies are inferred automatically')
-  }, [setEdges])
+  }, [nodes, setEdges])
   const addNode = (kind: string, label: string) => {
     const id = `${kind}-${Date.now()}`
     setNodes((current) => [...current, { id, type: 'default', position: { x: 300 + current.length * 22, y: 120 + current.length * 16 }, data: { label, kind, model: kind === 'image_generate' ? 'doubao-seedream-5-0-pro-260628' : kind === 'video_generate' ? 'doubao-seedance-2-0-mini-260615' : undefined } }])
@@ -288,7 +339,7 @@ export default function App() {
     setActivity(`${label} added to canvas`)
   }
   const uploadAsset = async (file: File) => {
-    if (!selectedNode || !['image_input', 'video_input'].includes(selectedNode.data.kind)) return
+    if (!selectedNode || !['image_input', 'video_input', 'audio_input', 'fetch'].includes(selectedNode.data.kind)) return
     const localPreview = URL.createObjectURL(file)
     setNodes((current) => current.map((node) => node.id === selectedNode.id ? { ...node, data: { ...node.data, localPreview, fileName: file.name, uploadState: 'uploading' } } : node))
     setActivity(`Uploading ${file.name}…`)

@@ -10,10 +10,9 @@ from agents.common import PROJECT_ROOT
 from agents.common.log_writer import record_error
 from agents.image.seedream_client import SeedreamClient
 from agents.video.seedance_client import SeedanceClient
-from agents.video.generate import build_content_blocks
-
-from .compiler import _asset_list, _asset_value, preview_workflow
-from .models import Workflow, infer_generation_mode
+from .compiler import _asset_value, _connected_values, preview_workflow
+from .media import iter_video_media, media_content_blocks
+from .models import Workflow
 from .repository import StudioRepository
 from .storage import StorageProvider, configured_provider, image_file_to_data_url
 from .validation import topological_order
@@ -124,7 +123,7 @@ class WorkflowExecutor:
                 data = node.data
                 if node.type == "text_input":
                     values[node_id] = data.get("text", "")
-                elif node.type in {"image_input", "video_input"}:
+                elif node.type in {"image_input", "video_input", "audio_input", "fetch"}:
                     source = data.get("url") or data.get("path")
                     if not source:
                         values[node_id] = None
@@ -182,23 +181,18 @@ class WorkflowExecutor:
                     video_client = video_client or SeedanceClient()
                     out_dir = project_dir / "raw_videos"
                     out_dir.mkdir(parents=True, exist_ok=True)
-                    image_values = data.get("image_urls") or inputs.get("image") or []
-                    image_urls = [self._pass_seedance_image(item) for item in _asset_list(image_values)]
-                    first_value = inputs.get("first_frame", data.get("first_frame") or data.get("first_frame_url"))
-                    last_value = inputs.get("last_frame", data.get("last_frame") or data.get("last_frame_url"))
-                    first_frame = self._pass_seedance_image(first_value) if first_value else None
-                    last_frame = self._pass_seedance_image(last_value) if last_value else None
-                    video_value = inputs.get("video", data.get("video_url"))
-                    video_url = self._resolve_seedance_asset(video_value) if video_value else None
-                    audio_value = data.get("audio_url")
-                    audio_url = self._resolve_seedance_asset(audio_value) if audio_value else None
-                    content = build_content_blocks(inputs.get("prompt", data.get("prompt", "")), image_urls=image_urls, first_frame_url=first_frame, last_frame_url=last_frame, video_url=video_url, audio_url=audio_url)
+
+                    def resolve_media(kind: str, value: Any) -> str:
+                        return self._pass_seedance_image(value) if kind == "image" else self._resolve_seedance_asset(value)
+
+                    media_items = list(iter_video_media(workflow, node_id, values, data, resolve=resolve_media))
+                    content = ([{"type": "text", "text": inputs.get("prompt", data.get("prompt", ""))}] if inputs.get("prompt", data.get("prompt", "")) else []) + media_content_blocks(media_items)
                     output_name = Path(str(data.get("output_name", f"{node_id}.mp4"))).name
                     if not output_name.lower().endswith(".mp4"):
                         output_name += ".mp4"
                     out_path = out_dir / output_name
                     path = video_client.generate(content=content, output_path=out_path, model=data.get("model") or video_client.default_model, ratio=data.get("ratio"), duration=data.get("duration"), watermark=data.get("watermark"), generate_audio=data.get("generate_audio"), resolution=data.get("resolution"), return_last_frame=data.get("return_last_frame"))
-                    values[node_id] = {"type": "video_result", "path": str(path), "url": self._artifact_url(Path(path))}
+                    values[node_id] = {"type": "video_result", "path": str(path), "url": self._artifact_url(Path(path)), "references": media_items}
                 elif node.type == "output":
                     values[node_id] = inputs.get("input")
                 elif node.type == "script_project":
