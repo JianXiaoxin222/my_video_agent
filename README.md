@@ -25,10 +25,10 @@ CLI 仍可独立、可复跑；Studio 将提示词、图片、视频和脚本项
 
 ```powershell
 cd D:\codingbook\video_agent
-git switch fetch/text
+git switch develop
 ```
 
-如果还没有项目，请先在代码托管平台复制仓库地址，再执行 `git clone <仓库地址>`，然后进入生成的目录并运行上面的 `git switch fetch/text`。不要把 `<仓库地址>` 原样输入。
+如果还没有项目，请先在代码托管平台复制仓库地址，再执行 `git clone <仓库地址>`，然后进入生成的目录并运行上面的 `git switch develop`。目前develop分支为最全功能的开发分支。
 
 检查软件是否可用：
 
